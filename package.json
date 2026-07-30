@@ -1,0 +1,36 @@
+{
+  "name": "banana-bridge",
+  "version": "0.1.0",
+  "description": "MCP server that generates images via the Gemini AI Studio web UI in a real browser",
+  "type": "module",
+  "bin": {
+    "banana-bridge": "dist/src/cli.js"
+  },
+  "main": "dist/src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "login": "tsx src/cli.ts login",
+    "doctor": "tsx src/cli.ts doctor",
+    "recon": "tsx src/cli.ts recon",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "playwright-core": "^1.50.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "PLAN.md"
+  ]
+}

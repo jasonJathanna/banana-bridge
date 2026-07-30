@@ -147,7 +147,7 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 ## Tests
 
 ```bash
-npm test          # 51 tests, no browser needed
+npm test          # 53 tests, no browser needed
 ```
 
 Covers image sniffing/dimension parsing, schema-agnostic base64 extraction, crop-spec
@@ -155,12 +155,13 @@ parsing and rect arithmetic, the serial queue, storage and quota rollover, prove
 disclosure, and the three MCP tools end-to-end over an in-memory transport with a
 stubbed provider.
 
-Three live checks are not part of `npm test` because they need a real browser:
+Four live checks are not part of `npm test` because they need a real browser:
 
 ```bash
-npx tsx test/preview.manual.ts   # canvas downscale path against real Chrome
-npx tsx test/crop.manual.ts      # canvas crop geometry and out-of-bounds refusal
-node test/stdio.manual.mjs       # the built server over real stdio
+npx tsx test/preview.manual.ts    # canvas downscale path against real Chrome
+npx tsx test/crop.manual.ts       # canvas crop geometry and out-of-bounds refusal
+node test/stdio.manual.mjs        # the built server over real stdio
+SCRATCH=/tmp/bb node test/realstack.manual.mjs   # real Chrome + real provider over stdio
 ```
 
 ## Status
@@ -170,3 +171,7 @@ selectors and busy-indicator heuristics in `src/providers/aistudio.ts` were writ
 defensively against a signed-out session and have **not** been confirmed against a
 live logged-in AI Studio page — run `login`, then `doctor`, then one `generate_image`,
 and use the debug dump plus `recon` to correct anything the UI does differently.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

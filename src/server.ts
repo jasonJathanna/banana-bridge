@@ -307,7 +307,21 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
     },
     async (): Promise<ToolResult> => {
       const quota = await quotaStatus();
-      const lines = [
+      const lines: string[] = [];
+      const trailing: string[] = [];
+
+      // The readiness check itself starts the browser, so it has to run before the
+      // browser state is read — otherwise this always reports "not started".
+      try {
+        await deps.queue.run(() => deps.provider.ensureReady());
+        lines.push("Signed in: yes");
+      } catch (err) {
+        const info = describeError(err);
+        lines.push(`Signed in: no (${info.kind}: ${info.message})`);
+        if (info.hint) trailing.push(`Hint: ${info.hint}`);
+      }
+
+      lines.push(
         `Browser: ${deps.session.isOpen ? "running" : "not started"} (headless=${config.headless})`,
         `Model: ${config.model}`,
         `Profile: ${config.profileDir}`,
@@ -315,15 +329,8 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
         `Default crop: ${config.crop}`,
         `Quota (local estimate): ${quota.used}/${quota.limit} used on ${quota.day}, ${quota.remaining} left.`,
         `Queue depth: ${deps.queue.depth}`,
-      ];
-      try {
-        await deps.queue.run(() => deps.provider.ensureReady());
-        lines.unshift("Signed in: yes");
-      } catch (err) {
-        const info = describeError(err);
-        lines.unshift(`Signed in: no (${info.kind}: ${info.message})`);
-        if (info.hint) lines.push(`Hint: ${info.hint}`);
-      }
+        ...trailing,
+      );
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   );

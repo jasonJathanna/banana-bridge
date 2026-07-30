@@ -31,6 +31,9 @@
   "files": [
     "dist/src",
     "README.md",
-    "PLAN.md"
-  ]
+    "PLAN.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "author": "Jason Jathanna"
 }

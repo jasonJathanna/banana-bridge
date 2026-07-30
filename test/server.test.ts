@@ -470,6 +470,55 @@ test("every successful result carries the provenance note", async () => {
   assert.match(contentOf(edited)[0]!.text!, /invisible SynthID/);
 });
 
+test("session_status reports the browser as running once the check has started it", async () => {
+  await freshState();
+  // Mirrors the real session: the browser is lazily started by ensureReady().
+  let started = false;
+  const deps: ServerDeps = {
+    provider: {
+      async generate() {
+        throw new Error("not used");
+      },
+      async ensureReady() {
+        started = true;
+        return true;
+      },
+    },
+    session: {
+      get isOpen() {
+        return started;
+      },
+      async makePreview() {
+        return null;
+      },
+      async cropImage() {
+        return null;
+      },
+    },
+    queue: new SerialQueue(0),
+  };
+
+  const text = contentOf(await connect(deps).then((c) => c.callTool({ name: "session_status", arguments: {} })))[0]!
+    .text!;
+  assert.match(text, /Signed in: yes/);
+  assert.match(text, /Browser: running/, "must reflect state after the readiness check, not before");
+});
+
+test("session_status puts the hint last, after the status block", async () => {
+  await freshState();
+  const { deps } = stubDeps({ readyFail: BananaError.notLoggedIn() });
+  const client = await connect(deps);
+  const text = contentOf(await client.callTool({ name: "session_status", arguments: {} }))[0]!.text!;
+
+  const lines = text.split("\n");
+  assert.match(lines[0]!, /Signed in: no/);
+  assert.match(lines.at(-1)!, /Hint:/);
+  assert.ok(
+    lines.findIndex((l) => l.startsWith("Queue depth")) < lines.length - 1,
+    "quota/queue lines come before the hint",
+  );
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

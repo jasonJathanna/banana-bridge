@@ -15,6 +15,8 @@ import {
   firstPresent,
   harvestDom,
   harvestResponse,
+  isRateLimitStatus,
+  RATE_LIMIT_TEXT,
   domImageSrcs,
   makeCollector,
   settle,
@@ -191,7 +193,12 @@ export class GeminiAppProvider {
     }
 
     const { images, collect } = makeCollector();
+    // A 429 on the generate RPC is Google's limit speaking, whatever the page renders.
+    let sawRateLimitStatus = false;
     const onResponse = (response: import("playwright-core").Response) => {
+      if (GENERATE_RPC.test(response.url()) && isRateLimitStatus(response.status())) {
+        sawRateLimitStatus = true;
+      }
       void harvestResponse(response, collect, GENERATE_RPC);
     };
     page.on("response", onResponse);
@@ -209,6 +216,11 @@ export class GeminiAppProvider {
       }
       if (images.length === 0) {
         const dumpPath = await dumpPage(page, "no-image");
+        // Order matters: a usage-limit refusal must not be reported as safety_blocked,
+        // which would send the caller off to rewrite a perfectly good prompt.
+        if (sawRateLimitStatus || RATE_LIMIT_TEXT.test(text)) {
+          throw BananaError.quotaExhaustedRemote(text.trim() || "HTTP 429 from the generate request");
+        }
         if (text.trim()) throw BananaError.safetyBlocked(truncate(text, 400));
         throw BananaError.uiChanged("no image found in response or DOM", dumpPath);
       }
@@ -255,7 +267,10 @@ export class GeminiAppProvider {
 
   private async submit(page: Page, prompt: string): Promise<void> {
     const stuck = await this.clearOverlays(page);
-    if (stuck) throw BananaError.dialogBlocked(stuck, await dumpPage(page, "dialog-blocked"));
+    if (stuck) {
+      if (RATE_LIMIT_TEXT.test(stuck)) throw BananaError.quotaExhaustedRemote(stuck);
+      throw BananaError.dialogBlocked(stuck, await dumpPage(page, "dialog-blocked"));
+    }
 
     const input = await findFirst(page, PROMPT_INPUT, 30_000);
     if (!input) throw BananaError.uiChanged("Gemini prompt box", await dumpPage(page, "submit"));

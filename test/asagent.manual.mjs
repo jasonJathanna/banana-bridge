@@ -57,6 +57,25 @@ await call("generate_image", { prompt: "a small potted cactus on a windowsill", 
 // Narrow aspect ratio: the auto crop's pixel floor should still clear the mark.
 await call("generate_image", { prompt: "a lighthouse at dusk", aspect_ratio: "9:16", crop: "auto" }, "generate_image (9:16 + crop auto)");
 
+// Fire two at once: the second must be refused immediately, not queued.
+console.log("\n### concurrency check: two generate_image calls at once ###");
+const t = Date.now();
+const [a, b] = await Promise.all([
+  client.callTool({ name: "generate_image", arguments: { prompt: "a tin robot on a desk" } }, undefined, { timeout: 300_000 }),
+  (async () => {
+    await new Promise((r) => setTimeout(r, 300));
+    const busy = await client.callTool({ name: "generate_image", arguments: { prompt: "should be refused" } }, undefined, { timeout: 60_000 });
+    console.log(`    second call returned after ${((Date.now() - t) / 1000).toFixed(1)}s: ${busy.isError ? "ERROR" : "ok"}`);
+    console.log("   ", (busy.content.find((c) => c.type === "text")?.text ?? "").split("\n").join("\n    "));
+    // And session_status while busy:
+    const st = await client.callTool({ name: "session_status", arguments: {} }, undefined, { timeout: 60_000 });
+    console.log("    session_status while busy:", (st.content[0]?.text ?? "").split("\n")[0]);
+    return busy;
+  })(),
+]);
+console.log(`    first call: ${a.isError ? "ERROR" : "ok"} after ${((Date.now() - t) / 1000).toFixed(1)}s`);
+void b;
+
 await client.close();
 console.log("\ndone");
 process.exit(0);

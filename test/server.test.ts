@@ -563,6 +563,121 @@ test("edit_image advertises that it needs the aistudio provider", async () => {
   assert.match(client.getInstructions()!, /VISIBLE Gemini logo/);
 });
 
+test("a second concurrent request is refused immediately, not queued", async () => {
+  await freshState();
+  // A slow provider so the first call is genuinely still in flight.
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  let calls = 0;
+  const deps: ServerDeps = {
+    provider: {
+      async generate() {
+        calls++;
+        await gate;
+        return { images: [png()], text: "" };
+      },
+      async ensureReady() {
+        return true;
+      },
+    },
+    session: {
+      isOpen: true,
+      async makePreview() {
+        return null;
+      },
+      async cropImage() {
+        return null;
+      },
+    },
+    queue: new SerialQueue(0),
+  };
+  const client = await connect(deps);
+
+  const first = client.callTool({ name: "generate_image", arguments: { prompt: "slow one" } });
+  // Give the first call a tick to reach the provider.
+  await new Promise((r) => setTimeout(r, 50));
+
+  const second = await client.callTool({ name: "generate_image", arguments: { prompt: "too soon" } });
+  assert.equal((second as { isError?: boolean }).isError, true);
+  const text = contentOf(second)[0]!.text!;
+  assert.match(text, /\[busy\]/);
+  assert.match(text, /already being generated/);
+  assert.match(text, /Wait for the in-flight request/);
+
+  // session_status must still answer while busy — that is the whole point of it.
+  const status = contentOf(await client.callTool({ name: "session_status", arguments: {} }))[0]!.text!;
+  assert.match(status, /BUSY: a generation is in progress/);
+
+  release();
+  const firstResult = await first;
+  assert.notEqual((firstResult as { isError?: boolean }).isError, true);
+  assert.equal(calls, 1, "the refused call must never reach the provider");
+
+  // Once finished, a new request is accepted again.
+  const third = await client.callTool({ name: "generate_image", arguments: { prompt: "after" } });
+  assert.notEqual((third as { isError?: boolean }).isError, true);
+  assert.equal(calls, 2);
+});
+
+test("Google's own limit maps to quota_exhausted and latches the day", async () => {
+  await freshState();
+  const { deps, calls } = stubDeps({ fail: BananaError.quotaExhaustedRemote("You've reached your limit for today") });
+  const client = await connect(deps);
+
+  const first = await client.callTool({ name: "generate_image", arguments: { prompt: "one" } });
+  assert.equal((first as { isError?: boolean }).isError, true);
+  const text = contentOf(first)[0]!.text!;
+  assert.match(text, /\[quota_exhausted\]/);
+  assert.match(text, /Google refused the request because its own usage limit/);
+  assert.equal(calls.length, 1);
+
+  // The next call must fail WITHOUT driving the browser again.
+  const second = await client.callTool({ name: "generate_image", arguments: { prompt: "two" } });
+  assert.equal((second as { isError?: boolean }).isError, true);
+  assert.match(contentOf(second)[0]!.text!, /\[quota_exhausted\]/);
+  assert.equal(calls.length, 1, "provider must not be called again after Google says no");
+
+  // And session_status says so plainly.
+  const status = contentOf(await client.callTool({ name: "session_status", arguments: {} }))[0]!.text!;
+  assert.match(status, /QUOTA EXHAUSTED: Google itself refused/);
+});
+
+test("the LOCAL estimate running out does not latch the day closed", async () => {
+  await freshState();
+  const { deps } = stubDeps({ images: 1 });
+  const client = await connect(deps);
+
+  // Fill the local limit (5 in this sandbox), then overflow it.
+  for (let i = 0; i < 5; i++) {
+    await client.callTool({ name: "generate_image", arguments: { prompt: `fill ${i}` } });
+  }
+  const over = await client.callTool({ name: "generate_image", arguments: { prompt: "over" } });
+  assert.match(contentOf(over)[0]!.text!, /\[quota_exhausted\]/);
+
+  // A wrong BANANA_DAILY_LIMIT must not permanently disable the tool, so the remote latch
+  // stays clear and raising the limit recovers.
+  const status = contentOf(await client.callTool({ name: "session_status", arguments: {} }))[0]!.text!;
+  assert.doesNotMatch(status, /Google itself refused/);
+});
+
+test("the busy and quota contracts are advertised, not just enforced", async () => {
+  const { deps } = stubDeps({});
+  const client = await connect(deps);
+  const instructions = client.getInstructions()!;
+  assert.match(instructions, /ONE REQUEST AT A TIME/);
+  assert.match(instructions, /busy/);
+  assert.match(instructions, /quota_exhausted/);
+  assert.match(instructions, /session_status. always answers/i);
+
+  const { tools } = await client.listTools();
+  for (const name of ["generate_image", "edit_image"]) {
+    const tool = tools.find((t) => t.name === name)!;
+    assert.match(tool.description!, /busy/, `${name} must advertise the busy contract`);
+    assert.match(tool.description!, /one (generation|request) runs at a time/i, name);
+  }
+  assert.match(tools.find((t) => t.name === "session_status")!.description!, /even while a generation/i);
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -12,6 +12,8 @@ import {
   firstPresent,
   harvestDom,
   harvestResponse,
+  isRateLimitStatus,
+  RATE_LIMIT_TEXT,
   domImageSrcs,
   makeCollector,
   settle,
@@ -140,7 +142,11 @@ export class AiStudioProvider {
     }
 
     const { images, collect } = makeCollector();
+    let sawRateLimitStatus = false;
     const onResponse = (response: Response) => {
+      if (GENERATE_RPC.test(response.url()) && isRateLimitStatus(response.status())) {
+        sawRateLimitStatus = true;
+      }
       void harvestResponse(response, collect, GENERATE_RPC);
     };
     page.on("response", onResponse);
@@ -158,6 +164,9 @@ export class AiStudioProvider {
       }
       if (images.length === 0) {
         const dumpPath = await dumpPage(page, "no-image");
+        if (sawRateLimitStatus || RATE_LIMIT_TEXT.test(text)) {
+          throw BananaError.quotaExhaustedRemote(text.trim() || "HTTP 429 from the generate request");
+        }
         if (text.trim()) throw BananaError.safetyBlocked(truncate(text, 400));
         throw BananaError.uiChanged("no image found in response or DOM", dumpPath);
       }

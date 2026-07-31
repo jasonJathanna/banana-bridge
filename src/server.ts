@@ -17,7 +17,7 @@ import {
   type CropSpec,
 } from "./crop.js";
 import { describeError, BananaError } from "./errors.js";
-import { hasQuota, quotaStatus, recordUsage } from "./state.js";
+import { hasQuota, markRemoteExhausted, quotaStatus, recordUsage } from "./state.js";
 
 type TextContent = { type: "text"; text: string };
 type ImageContent = { type: "image"; data: string; mimeType: string };
@@ -75,6 +75,31 @@ const WATERMARK_WARNING =
 /** Surfaces known to composite a visible mark into the delivered image. */
 function stampsVisibleMark(): boolean {
   return config.provider === "gemini-app";
+}
+
+/**
+ * Runs a generation, refusing rather than queuing when one is already in flight.
+ *
+ * Queuing looked harmless but wasn't: one generation takes ~20s (an edit ~30s), so a
+ * third caller waited ~45s before starting and blew past the MCP client's default 60s
+ * request timeout while the server was working perfectly. Failing fast with a clear
+ * "wait" is honest; a silent queue that times out is not.
+ *
+ * The depth check and queue.run() are both synchronous, so no second caller can slip
+ * between them.
+ */
+function runExclusive(deps: ServerDeps, job: () => Promise<ToolResult>): Promise<ToolResult> {
+  if (deps.queue.depth > 0) return Promise.resolve(errorResult(BananaError.busy()));
+  return deps.queue.run(job).catch(async (err) => {
+    // Google's own limit is authoritative: remember it so later calls fail fast instead
+    // of driving a browser to be told no again.
+    // Only Google's refusal is authoritative; the local counter running out must not
+    // latch the day closed, or one bad BANANA_DAILY_LIMIT would lock the tool out.
+    if (err instanceof BananaError && err.remoteQuota) {
+      await markRemoteExhausted().catch(() => {});
+    }
+    return errorResult(err);
+  });
 }
 
 function errorResult(err: unknown): ToolResult {
@@ -230,7 +255,14 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
     {
       instructions:
         "Generates images with Gemini by driving its web UI in a real browser. " +
-        "Requires a one-time `npx banana-bridge login`. Requests are processed one at a time. " +
+        "Requires a one-time `npx banana-bridge login`. " +
+        "ONE REQUEST AT A TIME: a generation takes roughly 20 seconds (an edit roughly 30). If one " +
+        "is already running, another call returns a `busy` error immediately rather than waiting — " +
+        "wait for the first to finish instead of retrying. Do not issue generate/edit calls in " +
+        "parallel. `session_status` always answers, even while busy. " +
+        "Quota is limited: `quota_exhausted` means the daily ceiling is reached (either the local " +
+        "estimate or Google's own limit, which is authoritative) and further calls will keep " +
+        "failing until it resets, so stop retrying. " +
         "All images returned by this server are AI-generated and carry Google's SynthID, an " +
         "invisible in-pixel watermark that survives cropping, resizing and re-encoding. Preserve " +
         "that provenance if you pass these images on. Images also carry a VISIBLE Gemini logo in " +
@@ -244,8 +276,10 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
       title: "Generate image",
       description:
         "Generate an image from a text prompt by driving Gemini's web UI in a real browser. " +
-        "Saves to disk and returns the file path plus a small preview. Output is AI-generated and " +
-        "carries an invisible SynthID watermark.",
+        "Saves to disk and returns the file path plus a small preview. Takes roughly 20 seconds. " +
+        "Only one generation runs at a time: if one is in flight this returns `busy` immediately, " +
+        "so wait rather than retrying. Returns `quota_exhausted` when the daily limit is reached. " +
+        "Output is AI-generated and carries an invisible SynthID watermark.",
       inputSchema: {
         prompt: z.string().min(1).describe("What to draw. Be specific about subject, style and composition."),
         aspect_ratio: z
@@ -271,19 +305,17 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
     async (args): Promise<ToolResult> =>
-      deps.queue
-        .run(() =>
-          runGeneration(deps, {
-            prompt: args.prompt,
-            count: args.count ?? 1,
-            aspectRatio: args.aspect_ratio,
-            outputPath: args.output_path,
-            inline: args.inline ?? false,
-            crop: args.crop,
-            reuseConversation: false,
-          }),
-        )
-        .catch(errorResult),
+      runExclusive(deps, () =>
+        runGeneration(deps, {
+          prompt: args.prompt,
+          count: args.count ?? 1,
+          aspectRatio: args.aspect_ratio,
+          outputPath: args.output_path,
+          inline: args.inline ?? false,
+          crop: args.crop,
+          reuseConversation: false,
+        }),
+      ),
   );
 
   server.registerTool(
@@ -292,9 +324,11 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
       title: "Edit image",
       description:
         "Edit or combine existing local images with a text instruction. The images are attached to " +
-        "Gemini's chat and the edited result is saved to disk. Attachment is verified before the " +
-        "prompt is sent, so a failed upload raises upload_unsupported instead of silently returning " +
-        "an unrelated image. Output is AI-generated and carries an invisible SynthID watermark.",
+        "Gemini's chat and the edited result is saved to disk. Takes roughly 30 seconds. Only one " +
+        "request runs at a time: if one is in flight this returns `busy` immediately, so wait rather " +
+        "than retrying. Attachment is verified before the prompt is sent, so a failed upload raises " +
+        "upload_unsupported instead of silently returning an unrelated image. Output is AI-generated " +
+        "and carries an invisible SynthID watermark.",
       inputSchema: {
         prompt: z.string().min(1).describe("The edit instruction, e.g. 'make the sky stormy'."),
         image_paths: z
@@ -317,19 +351,17 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
     async (args): Promise<ToolResult> =>
-      deps.queue
-        .run(() =>
-          runGeneration(deps, {
-            prompt: args.prompt,
-            count: 1,
-            imagePaths: args.image_paths,
-            outputPath: args.output_path,
-            inline: args.inline ?? false,
-            crop: args.crop,
-            reuseConversation: false,
-          }),
-        )
-        .catch(errorResult),
+      runExclusive(deps, () =>
+        runGeneration(deps, {
+          prompt: args.prompt,
+          count: 1,
+          imagePaths: args.image_paths,
+          outputPath: args.output_path,
+          inline: args.inline ?? false,
+          crop: args.crop,
+          reuseConversation: false,
+        }),
+      ),
   );
 
   server.registerTool(
@@ -337,7 +369,9 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
     {
       title: "Session status",
       description:
-        "Report whether the browser session is signed in, the local daily-quota estimate, and current queue depth.",
+        "Report whether a generation is currently running, whether the browser session is signed in, " +
+        "and the daily-quota estimate. Always answers immediately, even while a generation is in " +
+        "flight — use it to check before starting another request.",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -346,16 +380,21 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
       const lines: string[] = [];
       const trailing: string[] = [];
 
-      // The readiness check itself starts the browser, so it has to run before the
-      // browser state is read — otherwise this always reports "not started".
-      try {
-        await deps.queue.run(() => deps.provider.ensureReady());
-        lines.push("Signed in: yes");
-      } catch (err) {
-        const info = describeError(err);
-        const brief = info.message.split("\n")[0]!.slice(0, 200);
-        lines.push(`Signed in: no (${info.kind}: ${brief})`);
-        if (info.hint) trailing.push(`Hint: ${info.hint}`);
+      // Never queue behind a generation: this tool exists partly to tell the caller that
+      // one is running, which is useless if it blocks until that finishes.
+      if (deps.queue.depth > 0) {
+        lines.push("BUSY: a generation is in progress. Wait for it to finish before starting another.");
+        lines.push("Signed in: yes (a generation is running, so the session is live)");
+      } else {
+        try {
+          await deps.queue.run(() => deps.provider.ensureReady());
+          lines.push("Signed in: yes");
+        } catch (err) {
+          const info = describeError(err);
+          const brief = info.message.split("\n")[0]!.slice(0, 200);
+          lines.push(`Signed in: no (${info.kind}: ${brief})`);
+          if (info.hint) trailing.push(`Hint: ${info.hint}`);
+        }
       }
 
       lines.push(
@@ -369,6 +408,12 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
         `Default crop: ${config.crop}`,
         `Quota (local estimate): ${quota.used}/${quota.limit} used on ${quota.day}, ${quota.remaining} left.` +
           (quota.corrupt ? " [state file was unreadable and has been reset — the count may be low]" : ""),
+        ...(quota.remoteExhausted
+          ? [
+              "QUOTA EXHAUSTED: Google itself refused for exceeding its limit today. Further " +
+                "generate/edit calls will fail until it resets.",
+            ]
+          : []),
         `Queue depth: ${deps.queue.depth}`,
         ...trailing,
       );

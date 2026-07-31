@@ -65,6 +65,20 @@ export function bySizeDescending(images: Buffer[]): Buffer[] {
  */
 const ASSET_HOST = /(^|\.)gstatic\.com$/i;
 
+/**
+ * Phrases Google uses when refusing for ITS OWN usage limit rather than for safety. This
+ * has to be distinguished from a content refusal: the fixes are opposite (wait vs
+ * rephrase), and a rate limit reported as safety_blocked sends the caller to rewrite a
+ * prompt that was never the problem.
+ */
+export const RATE_LIMIT_TEXT =
+  /(reached|exceeded|hit)\b[^.]{0,40}\b(limit|quota|cap)|daily limit|limit for (today|now)|try again (later|tomorrow|in a)|no longer available today|out of (credits|generations)|rate.?limit/i;
+
+/** True when a generate RPC came back with a rate-limit status. */
+export function isRateLimitStatus(status: number): boolean {
+  return status === 429;
+}
+
 /** Reads image bytes out of a network response, whatever container they arrive in. */
 export async function harvestResponse(
   response: Response,

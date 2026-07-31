@@ -6,6 +6,7 @@
 export type FailureKind =
   | "not_logged_in"
   | "quota_exhausted"
+  | "busy"
   | "safety_blocked"
   | "ui_changed"
   | "invalid_input"
@@ -18,6 +19,8 @@ export class BananaError extends Error {
   readonly kind: FailureKind;
   readonly hint: string;
   readonly debugPath?: string;
+  /** True only when GOOGLE refused, not when the local estimate ran out. */
+  remoteQuota = false;
 
   constructor(kind: FailureKind, message: string, hint: string, debugPath?: string) {
     // Provider errors can carry huge browser logs; a tool result is not the place.
@@ -42,6 +45,31 @@ export class BananaError extends Error {
       "quota_exhausted",
       `Daily image quota looks exhausted (${used}/${limit} counted locally).`,
       "Wait for the quota to roll over, or raise BANANA_DAILY_LIMIT if the real limit is higher.",
+    );
+  }
+
+  /**
+   * Google refused because of ITS OWN limit, which is the authority — the local counter
+   * is only an estimate and can be well short of the real ceiling.
+   */
+  static quotaExhaustedRemote(detail: string): BananaError {
+    const err = new BananaError(
+      "quota_exhausted",
+      `Google refused the request because its own usage limit was reached: ${detail.slice(0, 200)}`,
+      "This is Google's limit, not the local counter, so it is the real ceiling. Wait for it to " +
+        "reset (typically the next day). Further requests are refused locally until then; delete " +
+        "the state file to clear that early.",
+    );
+    err.remoteQuota = true;
+    return err;
+  }
+
+  static busy(): BananaError {
+    return new BananaError(
+      "busy",
+      "An image is already being generated. Only one generation runs at a time.",
+      "Wait for the in-flight request to finish before starting another — do not retry " +
+        "immediately. A generation takes roughly 20 seconds, an edit roughly 30.",
     );
   }
 

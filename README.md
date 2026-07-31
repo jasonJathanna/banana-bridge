@@ -69,7 +69,11 @@ contains an invisible SynthID watermark` — and the same fact is stated in the 
 instructions and both tool descriptions. An agent that passes one of these images
 onward should know what it is handling.
 
-Requests are serialized: one browser, one tab, one generation at a time.
+**One request at a time, and a second is refused rather than queued.** A generation takes
+~20s (an edit ~30s), so queuing meant a third caller waited ~45s and blew past the MCP
+client's default 60s request timeout while the server was working fine. Now a concurrent
+call returns `busy` in well under a second, telling the agent to wait. `session_status`
+never queues, so it can always answer "a generation is in progress".
 
 ## Removing the visible watermark
 
@@ -177,7 +181,14 @@ wait before the real image arrives.
 The server keeps failure kinds distinct, because they need different fixes:
 
 - `not_logged_in` — run `login` again.
-- `quota_exhausted` — local counter hit `BANANA_DAILY_LIMIT`; the provider is not called.
+- `quota_exhausted` — the daily ceiling is reached. Two sources: the local counter hitting
+  `BANANA_DAILY_LIMIT` (an estimate; recoverable by raising it), or **Google itself**
+  refusing, detected from a 429 on the generate request or from refusal text. Google is
+  authoritative, so that case is recorded and further calls fail fast for the rest of the
+  local day instead of driving a browser to be told no again — delete the state file to
+  clear it early. A usage-limit refusal is deliberately never reported as
+  `safety_blocked`, since that would send the caller off to rewrite a fine prompt.
+- `busy` — a generation is already running; wait rather than retry.
 - `safety_blocked` — the model refused; the refusal text is included.
 - `invalid_input` — an unparseable or oversized crop; rejected before any quota is spent.
 - `upload_unsupported` — the file could not be attached and verification failed; the run
@@ -213,7 +224,7 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 ## Tests
 
 ```bash
-npm test          # 70 tests, no browser needed
+npm test          # 78 tests, no browser needed
 ```
 
 Covers image sniffing and header-only dimension parsing (including malformed-payload

@@ -8,6 +8,11 @@ interface QuotaState {
   used: number;
   lastGeneratedAt?: string;
   /**
+   * Set once Google itself refused for exceeding its limit. Google is the authority, so
+   * this blocks further attempts for the rest of the local day regardless of the count.
+   */
+  remoteExhaustedAt?: string;
+  /**
    * Latched for the rest of the day once an unreadable state file forced a reset to
    * zero. This has to live IN the file: a module-level flag is recomputed on every read,
    * so the first successful write would clear it — losing the disclosure at exactly the
@@ -50,6 +55,8 @@ async function read(): Promise<QuotaState> {
       day: parsed.day!,
       used: Math.max(0, parsed.used!),
       lastGeneratedAt: parsed.lastGeneratedAt,
+      remoteExhaustedAt:
+        typeof parsed.remoteExhaustedAt === "string" ? parsed.remoteExhaustedAt : undefined,
       // Carry the latch forward for the rest of the day.
       resetFromCorruption: parsed.resetFromCorruption === true,
     };
@@ -84,20 +91,36 @@ export async function quotaStatus(): Promise<{
   remaining: number;
   day: string;
   corrupt: boolean;
+  remoteExhausted: boolean;
 }> {
   const state = await read();
+  const remoteExhausted = Boolean(state.remoteExhaustedAt);
   return {
     used: state.used,
     limit: config.dailyLimit,
-    remaining: Math.max(0, config.dailyLimit - state.used),
+    // Google's refusal is authoritative, so report nothing left regardless of the count.
+    remaining: remoteExhausted ? 0 : Math.max(0, config.dailyLimit - state.used),
     day: state.day,
     corrupt: state.resetFromCorruption === true,
+    remoteExhausted,
   };
 }
 
 export async function hasQuota(count: number): Promise<boolean> {
-  const { used } = await read();
-  return used + count <= config.dailyLimit;
+  const state = await read();
+  // Google already said no today; the local estimate is irrelevant after that.
+  if (state.remoteExhaustedAt) return false;
+  return state.used + count <= config.dailyLimit;
+}
+
+/**
+ * Records that Google itself refused for exceeding its limit, so later calls fail fast
+ * instead of driving a browser just to be told no again.
+ */
+export async function markRemoteExhausted(): Promise<void> {
+  const state = await read();
+  state.remoteExhaustedAt = new Date().toISOString();
+  await write(state);
 }
 
 export async function recordUsage(count: number): Promise<void> {

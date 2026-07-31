@@ -51,6 +51,9 @@ if (genPath && fs.existsSync(genPath)) {
   console.log("\n### edit_image SKIPPED — no usable path from generate_image");
 }
 
+// Same call again, this time taking the crop advice the previous result gave.
+await call("generate_image", { prompt: "a small potted cactus on a windowsill", crop: "auto" }, "generate_image (crop: auto)");
+
 await client.close();
 console.log("\ndone");
 process.exit(0);

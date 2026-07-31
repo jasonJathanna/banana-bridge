@@ -78,8 +78,21 @@ from both edges (confirmed on a live 1024x559 result). Since `gemini-app` is the
 provider, that mark is on your output.
 
 `crop` trims it. Cropping happens in Chrome's canvas and re-encodes as PNG, so it is
-lossless even when the source is a JPEG. `BANANA_CROP=auto` is the calibrated default
-for this surface; cropping stays off unless you ask for it.
+lossless even when the source is a JPEG.
+
+Cropping is **off by default** — silently discarding 10% of every image would be a
+surprising default — so instead, any uncropped result tells the calling agent the mark is
+there and how to remove it:
+
+```
+Visible watermark: Gemini stamped its sparkle logo in the bottom-right corner.
+To remove it losslessly, re-run with crop:"auto" (trims 10% off the right edge),
+or crop the image yourself before using it.
+```
+
+That line disappears once a crop has actually run. Set `BANANA_CROP=auto` (or add
+`"env": {"BANANA_CROP": "auto"}` to the server entry in `~/.claude.json`) if you would
+rather every image come out clean without the agent having to ask.
 
 ```bash
 # Calibrate once against a real generated image:
@@ -183,7 +196,7 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 ## Tests
 
 ```bash
-npm test          # 53 tests, no browser needed
+npm test          # 55 tests, no browser needed
 ```
 
 Covers image sniffing/dimension parsing, schema-agnostic base64 extraction, crop-spec
@@ -218,7 +231,8 @@ returns a real 1024x559 image in ~20s. `session_status` and the crop path are co
 too.
 
 `edit_image` does **not** work on `gemini-app` (see above) and now fails fast instead of
-returning a wrong image.
+returning a wrong image; its tool description says so up front, so an agent knows before
+calling it.
 
 `aistudio` is implemented and its selectors are confirmed (prompt entry and Run both
 work), but the account used for testing is gated behind billing there, so its capture

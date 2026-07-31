@@ -519,6 +519,44 @@ test("session_status puts the hint last, after the status block", async () => {
   );
 });
 
+test("an uncropped result warns the agent that a visible watermark is present", async () => {
+  await freshState();
+  const { deps } = stubDeps({ images: 1, sourceDims: { width: 400, height: 200 } });
+  const client = await connect(deps);
+
+  const plain = await client.callTool({ name: "generate_image", arguments: { prompt: "no crop" } });
+  const text = contentOf(plain)[0]!.text!;
+  assert.match(text, /Visible watermark: Gemini stamped its sparkle logo in the bottom-right/);
+  assert.match(text, /crop:"auto"/);
+
+  // ...and stays quiet once a crop has actually removed it.
+  const cropped = await client.callTool({
+    name: "generate_image",
+    arguments: { prompt: "cropped", crop: "auto" },
+  });
+  const cropText = contentOf(cropped)[0]!.text!;
+  assert.doesNotMatch(cropText, /Visible watermark/);
+  assert.match(cropText, /Crop: cropped 400x200 -> 360x200/);
+  // The invisible-watermark disclosure is unconditional and survives either path.
+  assert.match(text, /invisible SynthID/);
+  assert.match(cropText, /invisible SynthID/);
+});
+
+test("edit_image advertises that it needs the aistudio provider", async () => {
+  const { deps } = stubDeps({});
+  const client = await connect(deps);
+  const { tools } = await client.listTools();
+
+  const edit = tools.find((t) => t.name === "edit_image")!;
+  assert.match(edit.description!, /aistudio/);
+  assert.match(edit.description!, /upload_unsupported/);
+
+  const generate = tools.find((t) => t.name === "generate_image")!;
+  const crop = (generate.inputSchema.properties as Record<string, { description?: string }>).crop!;
+  assert.match(crop.description!, /visible Gemini watermark/i);
+  assert.match(client.getInstructions()!, /VISIBLE Gemini logo/);
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

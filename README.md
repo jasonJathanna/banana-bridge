@@ -213,13 +213,14 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 ## Tests
 
 ```bash
-npm test          # 57 tests, no browser needed
+npm test          # 66 tests, no browser needed
 ```
 
-Covers image sniffing/dimension parsing, schema-agnostic base64 extraction, crop-spec
-parsing and rect arithmetic, the serial queue, storage and quota rollover, provenance
-disclosure, and the three MCP tools end-to-end over an in-memory transport with a
-stubbed provider.
+Covers image sniffing and header-only dimension parsing (including malformed-payload
+rejection), schema-agnostic base64 extraction, data-URL decoding, crop-spec parsing and
+rect arithmetic with pixel floors, the serial queue, storage naming and directory
+semantics, quota rollover/corruption/atomic writes, provenance and watermark disclosure,
+and the three MCP tools end-to-end over an in-memory transport with a stubbed provider.
 
 Live checks need a real browser (and a signed-in profile for the last three), so they
 are not part of `npm test`:

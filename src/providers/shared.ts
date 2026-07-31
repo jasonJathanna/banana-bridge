@@ -145,8 +145,13 @@ export async function harvestDom(page: Page, minDim = 256, exclude: string[] = [
 
   const buffers: Buffer[] = [];
   for (const dataUrl of encoded) {
-    const buf = decodeDataUrl(dataUrl);
-    if (buf) buffers.push(buf);
+    // A malformed src must never abort the generation; this is a best-effort fallback.
+    try {
+      const buf = decodeDataUrl(dataUrl);
+      if (buf) buffers.push(buf);
+    } catch {
+      // Skip this one.
+    }
   }
   return buffers;
 }

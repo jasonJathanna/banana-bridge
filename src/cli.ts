@@ -92,6 +92,7 @@ async function doctor(): Promise<number> {
 
   const quota = await quotaStatus();
   log(`  quota       : ${quota.used}/${quota.limit} used on ${quota.day} (${quota.remaining} left)`);
+  if (quota.corrupt) log("                WARNING: state file was unreadable and reset; the count may be low");
 
   const session = new BrowserSession();
   const provider = createProvider(session);

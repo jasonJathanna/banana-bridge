@@ -367,7 +367,8 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
         `Profile: ${config.profileDir}`,
         `Output dir: ${config.outputDir}`,
         `Default crop: ${config.crop}`,
-        `Quota (local estimate): ${quota.used}/${quota.limit} used on ${quota.day}, ${quota.remaining} left.`,
+        `Quota (local estimate): ${quota.used}/${quota.limit} used on ${quota.day}, ${quota.remaining} left.` +
+          (quota.corrupt ? " [state file was unreadable and has been reset — the count may be low]" : ""),
         `Queue depth: ${deps.queue.depth}`,
         ...trailing,
       );

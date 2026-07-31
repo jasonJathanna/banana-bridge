@@ -55,6 +55,10 @@ export function readDimensions(buf: Buffer): { width: number; height: number } |
       return { width: w, height: h };
     }
     if (chunk === "VP8 " && buf.length >= 30) {
+      // Lossy WebP: the dimensions only mean anything after the 3-byte keyframe start
+      // code 9d 01 2a. Without checking it, a truncated or non-keyframe payload yields
+      // confident garbage — and dimensions gate which captures we keep.
+      if (buf[23] !== 0x9d || buf[24] !== 0x01 || buf[25] !== 0x2a) return null;
       return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
     }
     if (chunk === "VP8L" && buf.length >= 25) {
@@ -99,11 +103,15 @@ const BASE64_RUN = /[A-Za-z0-9+/_-]{512,}={0,2}/g;
  * Extracts every embedded image from an arbitrary text body, deduped by content.
  * `minBytes` filters out icons and 1x1 spacers that occasionally ride along.
  */
-export function extractImagesFromText(body: string, minBytes = 4096): Buffer[] {
+export function extractImagesFromText(body: string, minBytes = 4096, maxCandidates = 200): Buffer[] {
   const found: Buffer[] = [];
   const seen = new Set<string>();
+  let examined = 0;
 
   for (const match of body.matchAll(BASE64_RUN)) {
+    // Guard against pathological bodies: this runs on EVERY json/text response over 4KB,
+    // and each candidate costs a base64 decode. Real payloads carry a handful of images.
+    if (++examined > maxCandidates) break;
     const raw = match[0];
     const buf = decodeBase64(raw);
     if (buf.length < minBytes) continue;
@@ -116,11 +124,36 @@ export function extractImagesFromText(body: string, minBytes = 4096): Buffer[] {
   return found;
 }
 
-/** Pulls bytes out of a `data:image/...;base64,...` URL. */
+/**
+ * Percent-decodes a data-URL payload to raw BYTES.
+ *
+ * `Buffer.from(decodeURIComponent(s), "binary")` is wrong here: decodeURIComponent
+ * reassembles percent-escapes into UTF-8 code points, and latin1 then truncates
+ * everything above 0xFF — so any byte over 0x7F is silently corrupted. Image bytes are
+ * full-range binary, so that path mangles exactly the data we care about.
+ */
+function percentDecodeToBytes(payload: string): Buffer {
+  const out: number[] = [];
+  for (let i = 0; i < payload.length; i++) {
+    const ch = payload[i]!;
+    if (ch === "%" && i + 2 < payload.length) {
+      const hex = payload.slice(i + 1, i + 3);
+      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+        out.push(Number.parseInt(hex, 16));
+        i += 2;
+        continue;
+      }
+    }
+    out.push(ch.charCodeAt(0) & 0xff);
+  }
+  return Buffer.from(out);
+}
+
+/** Pulls bytes out of a `data:image/...;base64,...` URL (or a percent-encoded one). */
 export function decodeDataUrl(url: string): Buffer | null {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
   if (!match) return null;
   const payload = match[3]!;
-  const buf = match[2] ? decodeBase64(payload) : Buffer.from(decodeURIComponent(payload), "binary");
+  const buf = match[2] ? decodeBase64(payload) : percentDecodeToBytes(payload);
   return sniffFormat(buf) ? buf : null;
 }

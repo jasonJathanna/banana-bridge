@@ -16,31 +16,67 @@ function today(): string {
   return `${now.getFullYear()}-${m}-${d}`;
 }
 
+/** Set when the state file existed but could not be parsed — surfaced by quotaStatus. */
+let lastReadCorrupt = false;
+
 async function read(): Promise<QuotaState> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(config.stateFile, "utf8");
-    const parsed = JSON.parse(raw) as Partial<QuotaState>;
-    if (parsed.day === today() && typeof parsed.used === "number") {
-      return { day: parsed.day, used: parsed.used, lastGeneratedAt: parsed.lastGeneratedAt };
-    }
+    raw = await fs.readFile(config.stateFile, "utf8");
   } catch {
-    // Missing or corrupt state is not an error — start the day at zero.
+    // Missing state is the normal first-run case, not corruption.
+    lastReadCorrupt = false;
+    return { day: today(), used: 0 };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<QuotaState>;
+    lastReadCorrupt = false;
+    // A different day is a rollover, not corruption.
+    if (parsed.day === today() && typeof parsed.used === "number" && Number.isFinite(parsed.used)) {
+      return { day: parsed.day, used: Math.max(0, parsed.used), lastGeneratedAt: parsed.lastGeneratedAt };
+    }
+    if (typeof parsed.day !== "string" || typeof parsed.used !== "number") lastReadCorrupt = true;
+  } catch {
+    // Unparseable: the counter is lost, which silently REMOVES the quota guard for the
+    // rest of the day. Start at zero to stay usable, but make it visible.
+    lastReadCorrupt = true;
   }
   return { day: today(), used: 0 };
 }
 
+/**
+ * Atomic write: same-directory temp file plus rename, which is atomic on POSIX. A plain
+ * writeFile truncates first, so an interrupted write leaves a partial file — and a
+ * partial file reads back as "0 used today", quietly disabling the quota guard.
+ */
 async function write(state: QuotaState): Promise<void> {
-  await fs.mkdir(path.dirname(config.stateFile), { recursive: true });
-  await fs.writeFile(config.stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const dir = path.dirname(config.stateFile);
+  await fs.mkdir(dir, { recursive: true });
+  const tmp = path.join(dir, `.state.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await fs.rename(tmp, config.stateFile);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
-export async function quotaStatus(): Promise<{ used: number; limit: number; remaining: number; day: string }> {
+export async function quotaStatus(): Promise<{
+  used: number;
+  limit: number;
+  remaining: number;
+  day: string;
+  corrupt: boolean;
+}> {
   const state = await read();
   return {
     used: state.used,
     limit: config.dailyLimit,
     remaining: Math.max(0, config.dailyLimit - state.used),
     day: state.day,
+    corrupt: lastReadCorrupt,
   };
 }
 

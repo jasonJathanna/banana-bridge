@@ -93,6 +93,73 @@ test("corrupt state is treated as a fresh day", async () => {
   assert.equal((await quotaStatus()).used, 0);
 });
 
+test("state writes are atomic and leave no temp files behind", async () => {
+  await fs.rm(process.env.BANANA_STATE_FILE!, { force: true });
+  await recordUsage(2);
+
+  const dir = path.dirname(process.env.BANANA_STATE_FILE!);
+  const leftovers = (await fs.readdir(dir)).filter((f) => f.includes(".tmp"));
+  assert.deepEqual(leftovers, [], "temp file must be renamed, not left in place");
+
+  // The file on disk is complete, parseable JSON — a truncated write would read back as
+  // "0 used", silently removing the quota guard for the rest of the day.
+  const raw = await fs.readFile(process.env.BANANA_STATE_FILE!, "utf8");
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.used, 2);
+  assert.equal((await quotaStatus()).corrupt, false);
+});
+
+test("a corrupt state file is reported, not silently treated as a fresh day", async () => {
+  await fs.writeFile(process.env.BANANA_STATE_FILE!, "{ truncated", "utf8");
+  const status = await quotaStatus();
+  assert.equal(status.used, 0, "stays usable");
+  assert.equal(status.corrupt, true, "but the lost count is visible");
+
+  // A missing file is the normal first run and must NOT be flagged.
+  await fs.rm(process.env.BANANA_STATE_FILE!, { force: true });
+  assert.equal((await quotaStatus()).corrupt, false);
+});
+
+test("a rollover to a new day is not mistaken for corruption", async () => {
+  await fs.writeFile(process.env.BANANA_STATE_FILE!, JSON.stringify({ day: "2001-01-01", used: 42 }), "utf8");
+  const status = await quotaStatus();
+  assert.equal(status.used, 0);
+  assert.equal(status.corrupt, false, "old but valid state is a rollover");
+});
+
+test("a negative or non-finite counter cannot grant extra quota", async () => {
+  await fs.writeFile(process.env.BANANA_STATE_FILE!, JSON.stringify({ day: todayStamp(), used: -100 }), "utf8");
+  assert.equal((await quotaStatus()).used, 0, "clamped, so -100 does not buy 100 extra images");
+});
+
+test("an output_path that is a directory writes INTO it, like cp", async () => {
+  const dir = path.join(sandbox, "iam-a-directory");
+  await fs.mkdir(dir, { recursive: true });
+
+  const saved = await saveImage(PNG, "a red pixel", { outputPath: dir });
+
+  // Previously extname("") was empty, so ".png" was appended and the image landed in a
+  // SIBLING file named after the directory — silently, which is the worst kind.
+  assert.equal(path.dirname(saved.path), dir, "file goes inside the directory");
+  assert.match(path.basename(saved.path), /a-red-pixel\.png$/);
+  assert.equal((await fs.readdir(dir)).length, 1);
+  assert.equal(await fs.stat(`${dir}.png`).then(() => true, () => false), false, "no sibling file");
+});
+
+test("multiple images into a directory output_path do not collide", async () => {
+  const dir = path.join(sandbox, "multi-dir");
+  await fs.mkdir(dir, { recursive: true });
+  const a = await saveImage(PNG, "twins", { outputPath: dir, index: 0, total: 2 });
+  const b = await saveImage(PNG, "twins", { outputPath: dir, index: 1, total: 2 });
+  assert.notEqual(a.path, b.path);
+  assert.equal((await fs.readdir(dir)).length, 2);
+});
+
+function todayStamp(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${`${n.getMonth() + 1}`.padStart(2, "0")}-${`${n.getDate()}`.padStart(2, "0")}`;
+}
+
 test.after(async () => {
   await fs.rm(sandbox, { recursive: true, force: true });
 });

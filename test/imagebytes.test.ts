@@ -151,3 +151,57 @@ test("decodeDataUrl round-trips and rejects non-images", () => {
   assert.equal(decodeDataUrl("data:text/plain;base64,aGVsbG8="), null);
   assert.equal(decodeDataUrl("https://example.com/a.png"), null);
 });
+
+test("lossy WebP dimensions are rejected without the keyframe start code", () => {
+  const good = makeWebpVp8Lossy(320, 240, true);
+  assert.deepEqual(readDimensions(good), { width: 320, height: 240 });
+
+  // Same bytes, start code corrupted: previously this returned confident garbage, and
+  // dimensions decide which captures get kept.
+  const bad = makeWebpVp8Lossy(320, 240, false);
+  assert.equal(sniffFormat(bad), "webp", "still sniffs as webp");
+  assert.equal(readDimensions(bad), null, "but dimensions must not be trusted");
+});
+
+test("percent-encoded data URLs decode to exact bytes", () => {
+  // The old decodeURIComponent path did not merely mangle these bytes, it THREW
+  // "URIError: URI malformed" (percent-encoded binary is not valid UTF-8) — uncaught,
+  // so it propagated out of harvestDom and aborted the whole generation.
+  const png = makePng(8, 8);
+  const encoded = Array.from(png)
+    .map((b) => `%${b.toString(16).padStart(2, "0")}`)
+    .join("");
+  const decoded = decodeDataUrl(`data:image/png,${encoded}`);
+  assert.deepEqual(decoded, png, "round-trips byte for byte");
+
+  const high = png.filter((b) => b > 0x7f).length;
+  assert.ok(high > 0, "fixture must actually contain high bytes to be a real test");
+});
+
+test("extraction stops after the candidate cap", () => {
+  // Guard against pathological bodies; this runs on every json/text response over 4KB.
+  const png = makePng(200, 200, 8192);
+  const filler = "A".repeat(600);
+  const body = [...Array(50).fill(filler), png.toString("base64")].join('","');
+  assert.equal(extractImagesFromText(body, 4096, 10).length, 0, "image past the cap is not reached");
+  assert.equal(extractImagesFromText(body, 4096, 200).length, 1, "and is found when the cap allows");
+});
+
+/** Lossy WebP: VP8 chunk, optionally with a valid 9d 01 2a keyframe start code. */
+function makeWebpVp8Lossy(width: number, height: number, validStartCode: boolean): Buffer {
+  const buf = Buffer.alloc(30);
+  buf.write("RIFF", 0, "ascii");
+  buf.writeUInt32LE(22, 4);
+  buf.write("WEBP", 8, "ascii");
+  buf.write("VP8 ", 12, "ascii");
+  buf.writeUInt32LE(10, 16);
+  buf[20] = 0x00;
+  buf[21] = 0x00;
+  buf[22] = 0x00;
+  buf[23] = validStartCode ? 0x9d : 0x00;
+  buf[24] = validStartCode ? 0x01 : 0x00;
+  buf[25] = validStartCode ? 0x2a : 0x00;
+  buf.writeUInt16LE(width, 26);
+  buf.writeUInt16LE(height, 28);
+  return buf;
+}

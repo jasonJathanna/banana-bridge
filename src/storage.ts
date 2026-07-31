@@ -37,8 +37,22 @@ export async function saveImage(
   const format = sniffFormat(buf);
   if (!format) throw new Error("Captured bytes are not a recognizable image");
 
+  const suffix = (options.total ?? 1) > 1 ? `-${(options.index ?? 0) + 1}` : "";
+  const generatedName = `${stamp()}-${slug(prompt)}${suffix}.${extensionFor(format)}`;
+
+  // An output_path naming an EXISTING directory means "put it in here", the way `cp`
+  // treats a directory destination. Without this, extname("") is empty so the extension
+  // gets appended and the image lands in a sibling file named after the directory —
+  // surprising, and easy to miss because it silently succeeds.
+  const asDirectory = options.outputPath
+    ? await fs
+        .stat(path.resolve(options.outputPath))
+        .then((s) => s.isDirectory())
+        .catch(() => false)
+    : false;
+
   let target: string;
-  if (options.outputPath) {
+  if (options.outputPath && !asDirectory) {
     const resolved = path.resolve(options.outputPath);
     if ((options.total ?? 1) > 1 && options.index !== undefined) {
       const ext = path.extname(resolved);
@@ -48,8 +62,8 @@ export async function saveImage(
       target = path.extname(resolved) ? resolved : `${resolved}.${extensionFor(format)}`;
     }
   } else {
-    const suffix = (options.total ?? 1) > 1 ? `-${(options.index ?? 0) + 1}` : "";
-    target = path.join(config.outputDir, `${stamp()}-${slug(prompt)}${suffix}.${extensionFor(format)}`);
+    const dir = asDirectory ? path.resolve(options.outputPath!) : config.outputDir;
+    target = path.join(dir, generatedName);
   }
 
   await fs.mkdir(path.dirname(target), { recursive: true });

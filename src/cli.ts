@@ -4,13 +4,23 @@ import path from "node:path";
 import readline from "node:readline";
 import { config } from "./config.js";
 import { BrowserSession, looksLikeSignIn } from "./browser.js";
-import { AiStudioProvider } from "./providers/aistudio.js";
+import { createProvider } from "./server.js";
 import { describeError } from "./errors.js";
 import { quotaStatus } from "./state.js";
 import { extractImagesFromText, mimeFor, readDimensions, sniffFormat } from "./imagebytes.js";
 import { parseCropSpec, resolveCropRect } from "./crop.js";
 import { serve } from "./server.js";
 import { sleep } from "./queue.js";
+
+/** The page for the configured provider. */
+function surfaceUrl(): string {
+  if (config.provider === "aistudio") {
+    const url = new URL(config.studioUrl);
+    if (config.model) url.searchParams.set("model", config.model);
+    return url.toString();
+  }
+  return config.geminiAppUrl;
+}
 
 function log(...args: unknown[]): void {
   console.error(...args);
@@ -32,9 +42,7 @@ async function login(): Promise<number> {
   const session = new BrowserSession({ headless: false });
   try {
     const page = await session.page();
-    const target = new URL(config.studioUrl);
-    if (config.model) target.searchParams.set("model", config.model);
-    await page.goto(target.toString(), { waitUntil: "domcontentloaded" });
+    await page.goto(surfaceUrl(), { waitUntil: "domcontentloaded" });
 
     log("");
     log("A Chrome window is open. Sign in to your Google account and wait for AI Studio to load.");
@@ -45,7 +53,7 @@ async function login(): Promise<number> {
     const deadline = Date.now() + 10 * 60_000;
     while (Date.now() < deadline) {
       const url = page.isClosed() ? "" : page.url();
-      if (!page.isClosed() && !looksLikeSignIn(url) && url.includes("aistudio.google.com")) {
+      if (!page.isClosed() && !looksLikeSignIn(url) && /aistudio\.google\.com|gemini\.google\.com/.test(url)) {
         const promptBox = page
           .locator('textarea, div[role="textbox"][contenteditable="true"]')
           .first();
@@ -72,6 +80,7 @@ async function doctor(): Promise<number> {
   log("banana-bridge doctor");
   log(`  profile dir : ${config.profileDir}`);
   log(`  output dir  : ${config.outputDir}`);
+  log(`  provider    : ${config.provider}`);
   log(`  model       : ${config.model}`);
   log(`  headless    : ${config.headless}`);
 
@@ -85,7 +94,7 @@ async function doctor(): Promise<number> {
   log(`  quota       : ${quota.used}/${quota.limit} used on ${quota.day} (${quota.remaining} left)`);
 
   const session = new BrowserSession();
-  const provider = new AiStudioProvider(session);
+  const provider = createProvider(session);
   try {
     await provider.ensureReady();
     log("  session     : signed in, prompt box reachable");
@@ -140,9 +149,7 @@ async function recon(): Promise<number> {
       }
     });
 
-    const target = new URL(config.studioUrl);
-    if (config.model) target.searchParams.set("model", config.model);
-    await page.goto(target.toString(), { waitUntil: "domcontentloaded" });
+    await page.goto(surfaceUrl(), { waitUntil: "domcontentloaded" });
 
     log("");
     log("Recon mode. Generate one image by hand in the browser window.");

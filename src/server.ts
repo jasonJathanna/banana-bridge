@@ -3,7 +3,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { config } from "./config.js";
 import { BrowserSession } from "./browser.js";
-import { AiStudioProvider, type CaptureResult, type GenerateRequest } from "./providers/aistudio.js";
+import { AiStudioProvider } from "./providers/aistudio.js";
+import { GeminiAppProvider } from "./providers/gemini-app.js";
+import type { CaptureResult, GenerateRequest } from "./providers/shared.js";
 import { SerialQueue } from "./queue.js";
 import { saveImage, type SavedImage } from "./storage.js";
 import { mimeFor, readDimensions, sniffFormat } from "./imagebytes.js";
@@ -39,11 +41,16 @@ export interface ServerDeps {
   queue: SerialQueue;
 }
 
+/** Picks the web surface named by BANANA_PROVIDER. */
+export function createProvider(session: BrowserSession): ImageProvider {
+  return config.provider === "aistudio" ? new AiStudioProvider(session) : new GeminiAppProvider(session);
+}
+
 function defaultDeps(): ServerDeps {
   const session = new BrowserSession();
   return {
     session,
-    provider: new AiStudioProvider(session),
+    provider: createProvider(session),
     queue: new SerialQueue(config.pacingMs),
   };
 }
@@ -323,6 +330,7 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
 
       lines.push(
         `Browser: ${deps.session.isOpen ? "running" : "not started"} (headless=${config.headless})`,
+        `Provider: ${config.provider}`,
         `Model: ${config.model}`,
         `Profile: ${config.profileDir}`,
         `Output dir: ${config.outputDir}`,
@@ -342,7 +350,7 @@ export async function serve(): Promise<void> {
   const session = new BrowserSession();
   const deps: ServerDeps = {
     session,
-    provider: new AiStudioProvider(session),
+    provider: createProvider(session),
     queue: new SerialQueue(config.pacingMs),
   };
   const server = createServer(deps);

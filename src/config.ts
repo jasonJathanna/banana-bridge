@@ -42,7 +42,14 @@ export const config = {
   navTimeoutMs: envInt("BANANA_NAV_TIMEOUT_MS", 60_000),
   /** Local estimate only — Google is the authority on the real quota. */
   dailyLimit: envInt("BANANA_DAILY_LIMIT", 100),
+  /**
+   * Which web surface to drive. "gemini-app" (gemini.google.com) is the default because
+   * AI Studio gates Run behind a billing dialog on free accounts; "aistudio" is kept
+   * for accounts that do have AI Studio access.
+   */
+  provider: (process.env.BANANA_PROVIDER || "gemini-app") as "gemini-app" | "aistudio",
   model: process.env.BANANA_MODEL || "gemini-2.5-flash-image",
+  geminiAppUrl: process.env.BANANA_GEMINI_URL || "https://gemini.google.com/app",
   studioUrl: process.env.BANANA_STUDIO_URL || "https://aistudio.google.com/prompts/new_chat",
   /** Extra pause between jobs so we don't hammer the UI. */
   pacingMs: envInt("BANANA_PACING_MS", 1_500),

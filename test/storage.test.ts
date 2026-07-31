@@ -120,6 +120,31 @@ test("a corrupt state file is reported, not silently treated as a fresh day", as
   assert.equal((await quotaStatus()).corrupt, false);
 });
 
+test("the corruption notice survives the next write, not just the first read", async () => {
+  await fs.writeFile(process.env.BANANA_STATE_FILE!, "{ truncated", "utf8");
+  assert.equal((await quotaStatus()).corrupt, true);
+
+  // A module-level flag would be cleared by this write, dropping the notice at exactly
+  // the point where the counter is known to be wrong.
+  await recordUsage(1);
+  const after = await quotaStatus();
+  assert.equal(after.used, 1);
+  assert.equal(after.corrupt, true, "still latched after a successful write");
+
+  await recordUsage(1);
+  assert.equal((await quotaStatus()).corrupt, true, "and after another");
+
+  // It must clear on a day rollover, though.
+  const raw = JSON.parse(await fs.readFile(process.env.BANANA_STATE_FILE!, "utf8"));
+  assert.equal(raw.resetFromCorruption, true, "latched in the file, not in memory");
+  await fs.writeFile(
+    process.env.BANANA_STATE_FILE!,
+    JSON.stringify({ ...raw, day: "2001-01-01" }),
+    "utf8",
+  );
+  assert.equal((await quotaStatus()).corrupt, false, "a new day starts clean");
+});
+
 test("a rollover to a new day is not mistaken for corruption", async () => {
   await fs.writeFile(process.env.BANANA_STATE_FILE!, JSON.stringify({ day: "2001-01-01", used: 42 }), "utf8");
   const status = await quotaStatus();
@@ -130,6 +155,14 @@ test("a rollover to a new day is not mistaken for corruption", async () => {
 test("a negative or non-finite counter cannot grant extra quota", async () => {
   await fs.writeFile(process.env.BANANA_STATE_FILE!, JSON.stringify({ day: todayStamp(), used: -100 }), "utf8");
   assert.equal((await quotaStatus()).used, 0, "clamped, so -100 does not buy 100 extra images");
+
+  // JSON has no NaN/Infinity literal, but 1e999 parses to Infinity — which would make
+  // remaining negative and every hasQuota() check pass.
+  await fs.writeFile(process.env.BANANA_STATE_FILE!, '{"day":"' + todayStamp() + '","used":1e999}', "utf8");
+  const status = await quotaStatus();
+  assert.equal(Number.isFinite(status.used), true);
+  assert.equal(status.used, 0);
+  assert.equal(status.corrupt, true, "a non-finite counter is corruption, not a valid state");
 });
 
 test("an output_path that is a directory writes INTO it, like cp", async () => {

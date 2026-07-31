@@ -35,8 +35,12 @@ export function makeCollector(minDim = 128): { images: Buffer[]; collect: (buf: 
     collect(buf: Buffer) {
       const key = `${buf.length}:${buf.subarray(0, 64).toString("base64")}`;
       if (seen.has(key)) return;
+      // Unreadable dimensions mean the bytes did not parse as a real image header, so
+      // treat that as suspect rather than "unknown, keep" — otherwise a malformed blob
+      // sails past the size gate and can be saved as the generated result. Every format
+      // we accept has a parseable header, so this costs no legitimate captures.
       const dims = readDimensions(buf);
-      if (dims && (dims.width < minDim || dims.height < minDim)) return;
+      if (!dims || dims.width < minDim || dims.height < minDim) return;
       seen.add(key);
       images.push(buf);
     },
@@ -145,13 +149,10 @@ export async function harvestDom(page: Page, minDim = 256, exclude: string[] = [
 
   const buffers: Buffer[] = [];
   for (const dataUrl of encoded) {
-    // A malformed src must never abort the generation; this is a best-effort fallback.
-    try {
-      const buf = decodeDataUrl(dataUrl);
-      if (buf) buffers.push(buf);
-    } catch {
-      // Skip this one.
-    }
+    // decodeDataUrl is contractually non-throwing and returns null on anything it cannot
+    // decode, so no guard is needed here.
+    const buf = decodeDataUrl(dataUrl);
+    if (buf) buffers.push(buf);
   }
   return buffers;
 }

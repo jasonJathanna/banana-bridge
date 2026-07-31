@@ -103,17 +103,26 @@ const BASE64_RUN = /[A-Za-z0-9+/_-]{512,}={0,2}/g;
  * Extracts every embedded image from an arbitrary text body, deduped by content.
  * `minBytes` filters out icons and 1x1 spacers that occasionally ride along.
  */
-export function extractImagesFromText(body: string, minBytes = 4096, maxCandidates = 200): Buffer[] {
+export function extractImagesFromText(
+  body: string,
+  minBytes = 4096,
+  maxDecodedBytes = 64 * 1024 * 1024,
+): Buffer[] {
   const found: Buffer[] = [];
   const seen = new Set<string>();
-  let examined = 0;
+  // A run this short cannot decode to minBytes, so it is skipped without paying for a
+  // decode at all. This is what actually bounds the work; counting candidates did not,
+  // because cheap non-image runs consumed the budget while one huge run still decoded
+  // in full — and a late image past the cap was dropped with a misleading "no image".
+  const minRunLength = Math.ceil((minBytes * 4) / 3);
+  let decodedBytes = 0;
 
   for (const match of body.matchAll(BASE64_RUN)) {
-    // Guard against pathological bodies: this runs on EVERY json/text response over 4KB,
-    // and each candidate costs a base64 decode. Real payloads carry a handful of images.
-    if (++examined > maxCandidates) break;
     const raw = match[0];
+    if (raw.length < minRunLength) continue;
+    if (decodedBytes + (raw.length * 3) / 4 > maxDecodedBytes) break;
     const buf = decodeBase64(raw);
+    decodedBytes += buf.length;
     if (buf.length < minBytes) continue;
     if (!sniffFormat(buf)) continue;
     const key = `${buf.length}:${buf.subarray(0, 64).toString("base64")}`;
@@ -133,23 +142,30 @@ export function extractImagesFromText(body: string, minBytes = 4096, maxCandidat
  * full-range binary, so that path mangles exactly the data we care about.
  */
 function percentDecodeToBytes(payload: string): Buffer {
-  const out: number[] = [];
+  // Preallocated: a number[] with one element per byte cost ~100x the payload size in
+  // heap (measured ~340MB for a 3MB image), all inside the MCP server process.
+  const out = Buffer.allocUnsafe(payload.length);
+  let n = 0;
   for (let i = 0; i < payload.length; i++) {
     const ch = payload[i]!;
     if (ch === "%" && i + 2 < payload.length) {
       const hex = payload.slice(i + 1, i + 3);
       if (/^[0-9a-fA-F]{2}$/.test(hex)) {
-        out.push(Number.parseInt(hex, 16));
+        out[n++] = Number.parseInt(hex, 16);
         i += 2;
         continue;
       }
     }
-    out.push(ch.charCodeAt(0) & 0xff);
+    out[n++] = ch.charCodeAt(0) & 0xff;
   }
-  return Buffer.from(out);
+  return out.subarray(0, n);
 }
 
-/** Pulls bytes out of a `data:image/...;base64,...` URL (or a percent-encoded one). */
+/**
+ * Pulls bytes out of a `data:image/...;base64,...` URL (or a percent-encoded one).
+ * Contract: returns null for anything it cannot decode as an image, and never throws —
+ * callers treat it as a best-effort fallback and must not need a try/catch.
+ */
 export function decodeDataUrl(url: string): Buffer | null {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
   if (!match) return null;

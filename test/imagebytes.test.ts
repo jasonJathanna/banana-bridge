@@ -178,13 +178,31 @@ test("percent-encoded data URLs decode to exact bytes", () => {
   assert.ok(high > 0, "fixture must actually contain high bytes to be a real test");
 });
 
-test("extraction stops after the candidate cap", () => {
-  // Guard against pathological bodies; this runs on every json/text response over 4KB.
+test("cheap noise runs never hide a later image", () => {
+  // The old candidate cap counted 600-char non-image runs, so enough leading noise made a
+  // real image invisible and the caller saw a misleading "no image came back".
   const png = makePng(200, 200, 8192);
   const filler = "A".repeat(600);
-  const body = [...Array(50).fill(filler), png.toString("base64")].join('","');
-  assert.equal(extractImagesFromText(body, 4096, 10).length, 0, "image past the cap is not reached");
-  assert.equal(extractImagesFromText(body, 4096, 200).length, 1, "and is found when the cap allows");
+  const body = [...Array(500).fill(filler), png.toString("base64")].join('","');
+  const found = extractImagesFromText(body);
+  assert.equal(found.length, 1, "the image is still found behind 500 noise runs");
+  assert.deepEqual(found[0], png);
+});
+
+test("work is bounded by decoded bytes, not candidate count", () => {
+  const png = makePng(200, 200, 8192);
+  const body = JSON.stringify([png.toString("base64")]);
+
+  // A budget below the payload stops before decoding it.
+  assert.deepEqual(extractImagesFromText(body, 4096, 1024), [], "budget exhausted, nothing decoded");
+  // A generous budget finds it.
+  assert.equal(extractImagesFromText(body, 4096, 64 * 1024 * 1024).length, 1);
+});
+
+test("runs too short to reach minBytes are skipped without decoding", () => {
+  // 600 chars decodes to ~450 bytes, well under the 4096 floor, so it must be prefiltered.
+  const body = JSON.stringify({ noise: "A".repeat(600) });
+  assert.deepEqual(extractImagesFromText(body), []);
 });
 
 /** Lossy WebP: VP8 chunk, optionally with a valid 9d 01 2a keyframe start code. */
@@ -205,3 +223,23 @@ function makeWebpVp8Lossy(width: number, height: number, validStartCode: boolean
   buf.writeUInt16LE(height, 28);
   return buf;
 }
+
+test("a payload with unreadable dimensions is dropped by the collector", async () => {
+  const { makeCollector } = await import("../src/providers/shared.js");
+
+  // Lossy WebP with a corrupted keyframe start code: sniffs as webp, dimensions unknown.
+  // readDimensions returning null used to mean "unknown, keep", so tightening the
+  // dimension parser actually LOOSENED this filter and let malformed bytes through.
+  const bad = makeWebpVp8Lossy(4, 4, false);
+  assert.equal(sniffFormat(bad), "webp");
+  assert.equal(readDimensions(bad), null);
+
+  const { images, collect } = makeCollector();
+  collect(bad);
+  assert.equal(images.length, 0, "suspect payload must not be collectable as a result");
+
+  // A well-formed one of adequate size still gets through.
+  const good = makeWebpVp8Lossy(640, 480, true);
+  collect(good);
+  assert.deepEqual(images, [good]);
+});

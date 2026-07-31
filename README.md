@@ -213,7 +213,7 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 ## Tests
 
 ```bash
-npm test          # 66 tests, no browser needed
+npm test          # 70 tests, no browser needed
 ```
 
 Covers image sniffing and header-only dimension parsing (including malformed-payload

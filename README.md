@@ -1,13 +1,21 @@
 # banana-bridge
 
-An MCP server that generates and edits images with Gemini by driving
-**aistudio.google.com** in a real Chrome window, so generations run against the free
-web-session quota instead of a paid API key.
+An MCP server that generates and edits images with Gemini by driving a real Chrome
+window, so generations run against the free web-session quota instead of a paid API key.
 
-> Automating the AI Studio UI is against Google's Terms of Service. The realistic risk
-> is rate-limiting or action against the Google account you use — so use a secondary
+Two surfaces are supported, selected with `BANANA_PROVIDER`:
+
+- **`gemini-app`** (default) — `gemini.google.com`. Works with an ordinary signed-in
+  Google account. Stamps a visible sparkle watermark, which `crop` removes.
+- **`aistudio`** — `aistudio.google.com`. Only for accounts with AI Studio entitlement:
+  on a free account, clicking Run raises an "Upgrade to unlock more" dialog and no
+  request is ever issued (verified on both `gemini-2.5-flash-image` and
+  `gemini-2.5-flash`, so it gates the account, not the model). You get `dialog_blocked`.
+
+> Automating these UIs is against Google's Terms of Service. The realistic risk is
+> rate-limiting or action against the Google account you use — so use a secondary
 > account. Output images carry Google's SynthID watermark; the browser route does not
-> change that.
+> change that, and this server discloses it on every result.
 
 ## Setup
 
@@ -65,19 +73,20 @@ Requests are serialized: one browser, one tab, one generation at a time.
 
 ## Removing the visible watermark
 
-The Gemini *app* stamps a visible sparkle mark into the corner of its images. The AI
-Studio route this server uses generally serves the raw model output, so check whether
-you actually have one before cropping anything.
+The Gemini app stamps a visible sparkle mark into the **bottom-right corner**, inset
+from both edges (confirmed on a live 1024x559 result). Since `gemini-app` is the default
+provider, that mark is on your output.
 
-If you do, `crop` trims it. Cropping happens in Chrome's canvas and re-encodes as PNG,
-so it is lossless even when the source is a JPEG.
+`crop` trims it. Cropping happens in Chrome's canvas and re-encodes as PNG, so it is
+lossless even when the source is a JPEG. `BANANA_CROP=auto` is the calibrated default
+for this surface; cropping stays off unless you ask for it.
 
 ```bash
 # Calibrate once against a real generated image:
 npx banana-bridge probe-watermark ~/path/to/image.png
-# Writes bottom-2pct.png … bottom-10pct.png next to it. Open them, pick the
+# Writes right-2pct.png … bottom-20pct.png next to it. Open them, pick the
 # smallest inset with no mark, then:
-export BANANA_CROP=bottom:4%
+export BANANA_CROP=right:10%
 ```
 
 Accepted forms, for `BANANA_CROP` or the per-call `crop` argument:
@@ -85,7 +94,7 @@ Accepted forms, for `BANANA_CROP` or the per-call `crop` argument:
 | Form | Meaning |
 |---|---|
 | `none` | No crop (default). |
-| `auto` | Trim the bottom 6%. |
+| `auto` | Trim 10% off the right edge — clears the sparkle with the least loss. |
 | `bottom:6%` | Named sides: `top`, `right`, `bottom`, `left`; comma-separate several. |
 | `48px` / `3%` | All four sides. |
 | `5%,10px` | Vertical, horizontal. |
@@ -110,17 +119,25 @@ Ordered by robustness, with automatic fallback:
    also resolves `blob:` URLs.
 3. Failing both, the run is reported as a UI change with a debug dump.
 
-Images smaller than 128px on a side are discarded, which filters out avatars, spinners
-and logos riding along in the same responses.
+Two filters keep UI chrome out of the result, both learned the hard way from live runs:
+images smaller than 128px on a side are discarded, and responses from `*.gstatic.com`
+are skipped entirely — Gemini serves a 512x512 sparkle logo from there that otherwise
+passes every size check and gets saved as your image. The wait also never accepts a
+capture while the response is still streaming, or an early-loading asset would end the
+wait before the real image arrives.
 
 ## Failure modes
 
-The server keeps four failure kinds distinct, because they need four different fixes:
+The server keeps failure kinds distinct, because they need different fixes:
 
 - `not_logged_in` — run `login` again.
 - `quota_exhausted` — local counter hit `BANANA_DAILY_LIMIT`; the provider is not called.
 - `safety_blocked` — the model refused; the refusal text is included.
 - `invalid_input` — an unparseable or oversized crop; rejected before any quota is spent.
+- `dialog_blocked` — a modal is intercepting the run and would not dismiss, with the
+  dialog's own text. On `aistudio` this means the account is gated behind billing.
+  The bridge only ever clicks close/"no thanks" controls — never anything that could
+  enable billing.
 - `ui_changed` / `timeout` — screenshot + HTML + URL written to the debug dir.
 
 When the UI shifts, `npx banana-bridge recon` opens a headed browser and logs every
@@ -138,11 +155,12 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 | `BANANA_STATE_FILE` | `…/state.json` | Daily quota counter. |
 | `BANANA_DEBUG_DIR` | `…/debug` | Failure dumps and recon logs. |
 | `BANANA_HEADLESS` | `false` | Opt-in: Google fingerprints headless Chrome. On Linux prefer `xvfb-run`. |
-| `BANANA_MODEL` | `gemini-2.5-flash-image` | Passed as the `model` URL parameter. |
+| `BANANA_PROVIDER` | `gemini-app` | `gemini-app` or `aistudio`. |
+| `BANANA_MODEL` | `gemini-2.5-flash-image` | AI Studio only — passed as the `model` URL parameter. |
 | `BANANA_DAILY_LIMIT` | `100` | Local estimate only — Google is the authority. |
 | `BANANA_TIMEOUT_MS` | `180000` | Per-generation deadline. |
 | `BANANA_PACING_MS` | `1500` | Pause between jobs. |
-| `BANANA_CROP` | `none` | Default crop, e.g. `auto`, `bottom:4%`. See above. |
+| `BANANA_CROP` | `none` | Default crop, e.g. `auto`, `right:10%`. See above. |
 
 ## Tests
 
@@ -155,22 +173,34 @@ parsing and rect arithmetic, the serial queue, storage and quota rollover, prove
 disclosure, and the three MCP tools end-to-end over an in-memory transport with a
 stubbed provider.
 
-Four live checks are not part of `npm test` because they need a real browser:
+Live checks need a real browser (and a signed-in profile for the last three), so they
+are not part of `npm test`:
 
 ```bash
 npx tsx test/preview.manual.ts    # canvas downscale path against real Chrome
 npx tsx test/crop.manual.ts       # canvas crop geometry and out-of-bounds refusal
 node test/stdio.manual.mjs        # the built server over real stdio
 SCRATCH=/tmp/bb node test/realstack.manual.mjs   # real Chrome + real provider over stdio
+node test/livegen.manual.mjs      # ONE real generation (consumes quota)
+npx tsx test/timing.manual.ts     # per-step timings — finds stalls
+npx tsx test/diagnose.manual.ts   # step-by-step state + screenshots
+npx tsx test/capture-probe.manual.ts  # logs every captured image with its source host
 ```
+
+`livegen` sets a 300s client timeout deliberately: **MCP clients default to a 60s
+request timeout**, which a browser-driven generation can exceed. Worth knowing if you
+register this server and a call appears to fail while the server is still working.
 
 ## Status
 
-Everything except a real generation is verified end to end. The capture strategy,
-selectors and busy-indicator heuristics in `src/providers/aistudio.ts` were written
-defensively against a signed-out session and have **not** been confirmed against a
-live logged-in AI Studio page — run `login`, then `doctor`, then one `generate_image`,
-and use the debug dump plus `recon` to correct anything the UI does differently.
+**Working end to end on `gemini-app`**, verified against a live signed-in session: one
+`generate_image` call returns a real 1024x559 image saved to disk in about 20 seconds.
+Login, `doctor`, crop calibration and the MCP stdio path are all confirmed too.
+
+`aistudio` is implemented and its selectors are confirmed (prompt entry and Run both
+work), but the account used for testing is gated behind billing there, so its capture
+path has never run to completion. If you have AI Studio access, expect to verify that
+path yourself; `recon` and `diagnose` exist for it.
 
 ## License
 

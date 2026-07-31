@@ -191,24 +191,30 @@ async function probeWatermark(imagePath: string | undefined): Promise<number> {
 
   const session = new BrowserSession({ headless: true });
   try {
-    for (const pct of [2, 3, 4, 5, 6, 8, 10]) {
-      const spec = parseCropSpec(`bottom:${pct}%`)!;
+    // Gemini stamps its sparkle in the bottom-RIGHT corner, so probe both edges:
+    // a right inset usually clears it with far less loss than a bottom one.
+    const probes = [
+      ...[2, 4, 6, 8, 10, 12].map((p) => `right:${p}%`),
+      ...[4, 8, 12, 16, 20].map((p) => `bottom:${p}%`),
+    ];
+    for (const probe of probes) {
+      const spec = parseCropSpec(probe)!;
       const rect = resolveCropRect(spec, dims.width, dims.height);
       if (!rect) continue;
       const cropped = await session.cropImage(source, mimeFor(format), rect);
       if (!cropped) {
-        log(`  bottom:${pct}% -> crop failed`);
+        log(`  ${probe} -> crop failed`);
         continue;
       }
-      const target = path.join(outDir, `bottom-${pct}pct.png`);
+      const target = path.join(outDir, `${probe.replace(":", "-").replace("%", "pct")}.png`);
       await fs.writeFile(target, cropped);
-      log(`  bottom:${pct}% -> ${rect.width}x${rect.height}  ${target}`);
+      log(`  ${probe} -> ${rect.width}x${rect.height}  ${target}`);
     }
   } finally {
     await session.close();
   }
   log(`\nOpen the files in ${outDir}, pick the smallest inset with no mark,`);
-  log("then set BANANA_CROP (e.g. BANANA_CROP=bottom:4%).");
+  log("then set BANANA_CROP (e.g. BANANA_CROP=right:8%).");
   return 0;
 }
 

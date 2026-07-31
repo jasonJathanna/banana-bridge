@@ -426,7 +426,7 @@ test("edit_image accepts crop too", async () => {
     arguments: { prompt: "tweak", image_paths: [input], crop: "auto" },
   });
 
-  assert.deepEqual(crops, [{ x: 0, y: 0, width: 400, height: 188 }]);
+  assert.deepEqual(crops, [{ x: 0, y: 0, width: 360, height: 200 }]);
 });
 
 test("provenance is disclosed in the server instructions and every tool description", async () => {

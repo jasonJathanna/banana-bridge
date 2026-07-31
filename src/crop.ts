@@ -29,13 +29,15 @@ export interface CropRect {
 const ZERO: Inset = { value: 0, unit: "px" };
 
 /**
- * The Gemini app composites its sparkle mark into the bottom strip of the image, so
- * the default trims that band. Calibrate with `banana-bridge probe-watermark`.
+ * The Gemini app stamps its sparkle mark in the bottom-RIGHT corner, inset from both
+ * edges. Measured on a real 1024x559 result: a 10% right inset clears it and keeps the
+ * full subject, while clearing it from the bottom would cost ~19% of the height. Hence
+ * a right inset rather than a bottom band. Calibrate with `banana-bridge probe-watermark`.
  */
 export const AUTO_SPEC: CropSpec = {
   top: ZERO,
-  right: ZERO,
-  bottom: { value: 6, unit: "pct" },
+  right: { value: 10, unit: "pct" },
+  bottom: ZERO,
   left: ZERO,
 };
 

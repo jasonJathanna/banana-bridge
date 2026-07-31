@@ -8,10 +8,11 @@ test("no-crop spellings all disable cropping", () => {
   }
 });
 
-test("auto trims the bottom strip", () => {
+test("auto trims the right edge, where Gemini stamps its mark", () => {
   assert.deepEqual(parseCropSpec("auto"), AUTO_SPEC);
-  assert.deepEqual(AUTO_SPEC.bottom, { value: 6, unit: "pct" });
+  assert.deepEqual(AUTO_SPEC.right, { value: 10, unit: "pct" });
   assert.deepEqual(AUTO_SPEC.top, { value: 0, unit: "px" });
+  assert.deepEqual(AUTO_SPEC.bottom, { value: 0, unit: "px" });
 });
 
 test("named sides parse independently", () => {
@@ -78,8 +79,8 @@ test("a crop that consumes the image throws rather than writing a 0-pixel file",
   assert.throws(() => resolveCropRect(parseCropSpec("60px")!, 100, 100), /entire image/);
 });
 
-test("auto against a real-ish image size", () => {
-  const rect = resolveCropRect(AUTO_SPEC, 1024, 1024)!;
-  assert.deepEqual(rect, { x: 0, y: 0, width: 1024, height: 963 });
-  assert.equal(describeCrop(rect, { width: 1024, height: 1024 }), "cropped 1024x1024 -> 1024x963 (offset 0,0)");
+test("auto against the real result size measured from a live generation", () => {
+  const rect = resolveCropRect(AUTO_SPEC, 1024, 559)!;
+  assert.deepEqual(rect, { x: 0, y: 0, width: 922, height: 559 });
+  assert.equal(describeCrop(rect, { width: 1024, height: 559 }), "cropped 1024x559 -> 922x559 (offset 0,0)");
 });

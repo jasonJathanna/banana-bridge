@@ -282,10 +282,10 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
     {
       title: "Edit image",
       description:
-        "Edit or combine existing local images with a text instruction. NOTE: only works when " +
-        "BANANA_PROVIDER=aistudio; on the default gemini-app surface uploads require a native OS " +
-        "file picker that cannot be automated, and this fails with upload_unsupported rather than " +
-        "returning an unrelated image. Output is AI-generated and carries an invisible SynthID watermark.",
+        "Edit or combine existing local images with a text instruction. The images are attached to " +
+        "Gemini's chat and the edited result is saved to disk. Attachment is verified before the " +
+        "prompt is sent, so a failed upload raises upload_unsupported instead of silently returning " +
+        "an unrelated image. Output is AI-generated and carries an invisible SynthID watermark.",
       inputSchema: {
         prompt: z.string().min(1).describe("The edit instruction, e.g. 'make the sky stormy'."),
         image_paths: z

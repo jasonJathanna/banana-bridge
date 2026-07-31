@@ -57,7 +57,7 @@ claude mcp add banana-bridge -- node /absolute/path/to/banana-bridge/dist/src/cl
 | Tool | Purpose |
 |---|---|
 | `generate_image` | Text prompt → image. Args: `prompt`, `aspect_ratio`, `count` (1–4), `output_path`, `inline`, `crop`. |
-| `edit_image` | Edit or combine local images. Args: `prompt`, `image_paths[]`, `output_path`, `inline`, `crop`. **Not functional on `gemini-app`** — see below. |
+| `edit_image` | Edit or combine local images. Args: `prompt`, `image_paths[]`, `output_path`, `inline`, `crop`. |
 | `session_status` | Signed-in state, quota estimate, default crop, queue depth. |
 
 Results return the **saved file path** plus a downscaled JPEG preview, so a
@@ -121,22 +121,36 @@ that fails in the browser leaves the original image intact and says so in the re
 This addresses the *visible* mark only. SynthID — the invisible, in-pixel watermark on
 all Gemini image output — is unaffected by cropping and by everything else here.
 
-### edit_image does not work on `gemini-app`
+### How uploads work (and the two routes that don't)
 
-`gemini.google.com` accepts file uploads only through a **native OS file picker** (the
-File System Access API): clicking "Upload & tools" → "Upload files" injects no
-`<input type=file>` and raises no Playwright `filechooser` event, so there is nothing to
-automate. Synthetic `drop` and `paste` events are ignored by the app — verified against
-four different drop targets and a paste into the focused composer, none of which produced
-any attachment.
+`edit_image` has to get a local file into a page that never exposes an
+`<input type=file>`. Three routes, in the order they were tried:
 
-`edit_image` therefore fails fast with `upload_unsupported` rather than silently falling
-back to a plain text-to-image generation. That fallback is what it did before the check
-existed, and it returned a confident, completely unrelated image — so the check matters
-more than the feature.
+1. **"Upload & tools" → "Upload files"** — dead end. That menu item opens a **native OS
+   picker** through the File System Access API: no file input appears and no Playwright
+   `filechooser` event fires, so a wait on one just hangs.
+2. **Synthetic `DragEvent` / `ClipboardEvent`** — dead end. Untrusted events
+   (`isTrusted: false`) are ignored; verified against four drop targets and a paste into
+   the focused composer, none of which attached anything.
+3. **CDP `Input.dispatchDragEvent`** — works. Chrome's DevTools Protocol accepts real
+   **file paths** in `DragData.files` and produces a **trusted** drop, indistinguishable
+   from dragging off the desktop.
 
-Editing needs `BANANA_PROVIDER=aistudio`, which does expose a real file input, on an
-account with AI Studio access. `generate_image` is unaffected on both surfaces.
+Two details that make or break route 3:
+
+- The CDP session must stay attached while the drop is processed. The browser handles it
+  asynchronously, so detaching immediately after sending the events loses the drop with no
+  error.
+- The first recognized upload raises a one-time consent dialog ("Creating content from
+  images and files… make sure you have the necessary rights"). The attachment never
+  appears until it is cleared, so the bridge clicks **Agree** — scoped to the upload flow
+  only, never added to the general dialog dismisser.
+
+Attachment is then **verified** against selectors observed on a real successful upload
+(`uploader-file-preview`, `gem-media-attachment`). If verification fails, `edit_image`
+raises `upload_unsupported` rather than proceeding — because without that check a failed
+attach silently degrades into a plain text-to-image generation and returns a confident,
+completely unrelated image.
 
 ## How the image is captured
 
@@ -164,7 +178,8 @@ The server keeps failure kinds distinct, because they need different fixes:
 - `quota_exhausted` — local counter hit `BANANA_DAILY_LIMIT`; the provider is not called.
 - `safety_blocked` — the model refused; the refusal text is included.
 - `invalid_input` — an unparseable or oversized crop; rejected before any quota is spent.
-- `upload_unsupported` — the surface has no automatable file-upload path (see above).
+- `upload_unsupported` — the file could not be attached and verification failed; the run
+  stops instead of degrading into an unrelated text-to-image result.
 - `dialog_blocked` — a modal is intercepting the run and would not dismiss, with the
   dialog's own text. On `aistudio` this means the account is gated behind billing.
   The bridge only ever clicks close/"no thanks" controls — never anything that could
@@ -230,9 +245,9 @@ the tools from the listing and calling them with minimal arguments. A prompt-onl
 returns a real 1024x559 image in ~20s. `session_status` and the crop path are confirmed
 too.
 
-`edit_image` does **not** work on `gemini-app` (see above) and now fails fast instead of
-returning a wrong image; its tool description says so up front, so an agent knows before
-calling it.
+`edit_image` works too, via a trusted CDP file drop (see above): a cactus photo plus
+"make the background a deep blue" returned the same scene with a blue background, subject
+and framing intact.
 
 `aistudio` is implemented and its selectors are confirmed (prompt entry and Run both
 work), but the account used for testing is gated behind billing there, so its capture

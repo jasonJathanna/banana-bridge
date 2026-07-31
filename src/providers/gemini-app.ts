@@ -107,13 +107,27 @@ const UPLOAD_MENU_ITEM = [
 
 const RESPONSE_TEXT = ["model-response message-content", "model-response", "message-content"];
 
-/** Evidence that the composer really holds an attachment, not just that we tried. */
+/**
+ * Evidence that the composer really holds an attachment. Observed on a confirmed
+ * successful upload, not guessed — an earlier guessed list produced false negatives.
+ */
 const ATTACHMENT_INDICATOR = [
-  'button[aria-label*="Remove" i]',
-  'button[aria-label*="Delete file" i]',
+  "uploader-file-preview.file-preview-chip",
   "uploader-file-preview",
-  '[data-test-id*="file"]',
-  ".file-preview",
+  "uploader-file-preview-container",
+  "gem-media-attachment",
+  ".attachment-preview-wrapper",
+  ".file-preview-container",
+];
+
+/**
+ * One-time gate raised by the FIRST recognized upload: "Creating content from images and
+ * files … make sure you have the necessary rights". Scoped to the upload flow on purpose
+ * — it is never added to the general dismisser, so no stray "Agree" elsewhere is clicked.
+ */
+const UPLOAD_CONSENT_AGREE = [
+  'mat-dialog-container button:has-text("Agree")',
+  '.cdk-overlay-pane button:has-text("Agree")',
 ];
 
 /** Gemini's streaming RPC. Matching is a hint only; capture is content-sniffed. */
@@ -298,11 +312,11 @@ export class GeminiAppProvider {
   /**
    * Attaches local images to the composer.
    *
-   * The obvious route — click "Upload & tools" then "Upload files" — is NOT automatable:
-   * that menu item opens a native OS picker through the File System Access API, which
-   * injects no <input type=file> and raises no Playwright "filechooser" event, so any
-   * wait on one hangs until it times out. Synthesising a drop carries the bytes in
-   * without involving a native dialog at all.
+   * Two dead ends, both verified: the "Upload & tools" → "Upload files" menu item opens a
+   * native OS picker via the File System Access API (no <input type=file>, no Playwright
+   * "filechooser" event), and synthetic DragEvent/ClipboardEvent are ignored because they
+   * are untrusted. What works is CDP Input.dispatchDragEvent, which carries real file
+   * paths and produces a TRUSTED drop indistinguishable from dragging off the desktop.
    */
   private async attachFiles(page: Page, paths: string[]): Promise<void> {
     // Still prefer a real input if the page ever exposes one.
@@ -313,43 +327,59 @@ export class GeminiAppProvider {
       return;
     }
 
-    const files: { name: string; mime: string; base64: string }[] = [];
+    // Validate and resolve every path before touching the browser: CDP takes paths,
+    // so a bad one would otherwise surface as a mysterious non-attachment.
+    const absolute: string[] = [];
     for (const p of paths) {
-      const bytes = await fs.readFile(p);
-      const format = sniffFormat(bytes);
-      if (!format) throw BananaError.invalidInput(`Not a readable image: ${p}`);
-      files.push({ name: path.basename(p), mime: mimeFor(format), base64: bytes.toString("base64") });
+      const resolved = path.resolve(p);
+      const bytes = await fs.readFile(resolved).catch(() => null);
+      if (!bytes) throw BananaError.invalidInput(`Cannot read image: ${resolved}`);
+      if (!sniffFormat(bytes)) throw BananaError.invalidInput(`Not a recognizable image: ${resolved}`);
+      absolute.push(resolved);
     }
 
     const target = await findFirst(page, PROMPT_INPUT, 15_000);
     if (!target) throw BananaError.uiChanged("composer for file drop", await dumpPage(page, "upload"));
+    const box = await target.boundingBox();
+    if (!box) throw BananaError.uiChanged("composer has no layout box", await dumpPage(page, "upload"));
 
-    const built = await target.evaluate((el, files) => {
-      const dt = new DataTransfer();
-      for (const f of files) {
-        const bin = atob(f.base64);
-        const arr = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        dt.items.add(new File([arr], f.name, { type: f.mime }));
+    const data = { items: [], files: absolute, dragOperationsMask: 1 /* copy */ };
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+
+    // The CDP session must stay attached while the drop is processed: the browser
+    // handles it asynchronously, so detaching right after sending the events loses it.
+    const cdp = await (await this.session.context()).newCDPSession(page);
+    let attached: Awaited<ReturnType<typeof findFirst>> = null;
+    try {
+      for (let attempt = 0; attempt < 2 && !attached; attempt++) {
+        for (const type of ["dragEnter", "dragOver", "drop"] as const) {
+          await cdp.send("Input.dispatchDragEvent", { type, x, y, data });
+          await sleep(300);
+        }
+
+        // A recognized upload raises a one-time content-rights consent dialog, and the
+        // attachment does not materialize until it is cleared.
+        await sleep(1_500);
+        const consent = await firstPresent(page, UPLOAD_CONSENT_AGREE);
+        if (consent) {
+          await consent.click({ timeout: 5_000 }).catch(() => {});
+          await sleep(1_500);
+        }
+
+        await settle(page);
+        // Verify the app actually ingested the file. Without this check a failed attach
+        // silently degrades into a plain text-to-image generation, which returns a
+        // confident-looking result that has nothing to do with the input image.
+        attached = await findFirst(page, ATTACHMENT_INDICATOR, 12_000);
       }
-      const opts = { bubbles: true, cancelable: true, composed: true, dataTransfer: dt };
-      const node = (el as HTMLElement).closest("rich-textarea") ?? (el as HTMLElement);
-      node.dispatchEvent(new DragEvent("dragenter", opts));
-      node.dispatchEvent(new DragEvent("dragover", opts));
-      node.dispatchEvent(new DragEvent("drop", opts));
-      return dt.files.length;
-    }, files);
-
-    void built; // Building a DataTransfer proves nothing; only the UI can confirm.
-
-    // Verify the app actually ingested the file. Without this check a failed attach
-    // silently degrades into a plain text-to-image generation, which returns a
-    // confident-looking result that has nothing to do with the input image.
-    await settle(page);
-    const attached = await findFirst(page, ATTACHMENT_INDICATOR, 8_000);
-    if (!attached) {
-      throw BananaError.uploadUnsupported(await dumpPage(page, "upload-unsupported"));
+    } finally {
+      await cdp.detach().catch(() => {});
     }
-    await sleep(3_000);
+
+    if (!attached) throw BananaError.uploadUnsupported(await dumpPage(page, "upload-unsupported"));
+
+    // Let the bytes finish uploading before the prompt is sent.
+    await sleep(4_000);
   }
 }

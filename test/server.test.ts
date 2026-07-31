@@ -548,8 +548,8 @@ test("edit_image advertises that it needs the aistudio provider", async () => {
   const { tools } = await client.listTools();
 
   const edit = tools.find((t) => t.name === "edit_image")!;
-  assert.match(edit.description!, /aistudio/);
   assert.match(edit.description!, /upload_unsupported/);
+  assert.match(edit.description!, /verified/);
 
   const generate = tools.find((t) => t.name === "generate_image")!;
   const crop = (generate.inputSchema.properties as Record<string, { description?: string }>).crop!;

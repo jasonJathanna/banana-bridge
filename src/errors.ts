@@ -9,6 +9,7 @@ export type FailureKind =
   | "safety_blocked"
   | "ui_changed"
   | "invalid_input"
+  | "dialog_blocked"
   | "timeout"
   | "browser_unavailable";
 
@@ -64,6 +65,17 @@ export class BananaError extends Error {
       "invalid_input",
       detail,
       'Crop accepts "none", "auto", "bottom:6%", "48px", or 1/2/4 comma-separated values.',
+    );
+  }
+
+  static dialogBlocked(dialogText: string, debugPath?: string): BananaError {
+    return new BananaError(
+      "dialog_blocked",
+      `A modal dialog is blocking the AI Studio page and would not dismiss: "${dialogText.slice(0, 300)}"`,
+      "Open AI Studio in a normal browser, clear the dialog by hand, then retry. If it is an " +
+        "upgrade/billing prompt, this account may not have free image generation on this surface. " +
+        "The bridge never clicks anything that could enable billing.",
+      debugPath,
     );
   }
 

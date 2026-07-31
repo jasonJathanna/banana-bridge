@@ -35,6 +35,30 @@ const BUSY_INDICATOR = [
   'ms-progress-indicator',
 ];
 
+/** Modal containers AI Studio throws up (upsells, notices) that block the Run button. */
+const DIALOG_CONTAINER = [
+  "mat-dialog-container.mdc-dialog--open",
+  "ms-upgrade-options-dialog",
+  ".cdk-overlay-pane.mat-mdc-dialog-panel",
+];
+
+/**
+ * Ways out of a blocking dialog. Strictly dismissal affordances — never "Continue with
+ * pay per request", "Upgrade", "Subscribe" or anything else that could opt the user
+ * into billing. A stuck dialog is a reportable error; an accidental purchase is not
+ * recoverable.
+ */
+const DIALOG_DISMISS = [
+  "mat-dialog-container button.close-button",
+  'mat-dialog-container button[aria-label="close"]',
+  'mat-dialog-container button[aria-label*="close" i]',
+  '.cdk-overlay-pane button[aria-label*="close" i]',
+  'mat-dialog-container button:has-text("No thanks")',
+  'mat-dialog-container button:has-text("Not now")',
+  'mat-dialog-container button:has-text("Maybe later")',
+  'mat-dialog-container button:has-text("Dismiss")',
+];
+
 const FILE_INPUT = 'input[type="file"]';
 
 const ADD_ASSET_BUTTON = [
@@ -212,7 +236,38 @@ export class AiStudioProvider {
     return buffers;
   }
 
+  /**
+   * Closes any modal sitting over the page. Returns the text of the last dialog it saw,
+   * so callers can report *what* was blocking if it will not go away.
+   */
+  private async dismissDialogs(page: Page, attempts = 3): Promise<string | null> {
+    let lastText: string | null = null;
+
+    for (let i = 0; i < attempts; i++) {
+      const container = await this.firstPresent(page, DIALOG_CONTAINER);
+      if (!container) return null;
+
+      lastText = ((await container.textContent().catch(() => "")) ?? "").replace(/\s+/g, " ").trim();
+
+      const dismiss = await this.findFirst(page, DIALOG_DISMISS, 2_000);
+      if (dismiss) {
+        await dismiss.click({ timeout: 5_000 }).catch(() => {});
+      } else {
+        // No close control found; Escape is the last non-destructive option.
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+      await sleep(800);
+    }
+
+    // Still there after every attempt.
+    return (await this.firstPresent(page, DIALOG_CONTAINER)) ? lastText : null;
+  }
+
   private async submitPrompt(page: Page, prompt: string): Promise<void> {
+    // Upsell modals intercept pointer events on the Run button.
+    const stuck = await this.dismissDialogs(page);
+    if (stuck) throw BananaError.dialogBlocked(stuck, await this.dump(page, "dialog-blocked"));
+
     const input = await this.findFirst(page, PROMPT_INPUT, 30_000);
     if (!input) throw BananaError.uiChanged("prompt input box", await this.dump(page, "submit"));
 
@@ -221,9 +276,17 @@ export class AiStudioProvider {
     // type() rather than fill(): the Angular editor listens for real key events.
     await input.type(prompt, { delay: 4 });
 
+    await this.clickRun(page);
+  }
+
+  private async clickRun(page: Page): Promise<void> {
     const run = await this.findFirst(page, RUN_BUTTON, 5_000);
     if (run && (await run.isEnabled().catch(() => false))) {
-      await run.click();
+      await run.click({ timeout: 10_000 }).catch(async () => {
+        // Something is overlaying the button; clear it and try the shortcut.
+        await this.dismissDialogs(page);
+        await page.keyboard.press("Control+Enter");
+      });
     } else {
       await page.keyboard.press("Control+Enter");
     }
@@ -238,10 +301,31 @@ export class AiStudioProvider {
     const deadline = Date.now() + config.timeoutMs;
     let sawBusy = false;
     let settleUntil: number | null = null;
+    let rerunsLeft = 1;
 
     while (Date.now() < deadline) {
       const busy = await this.anyVisible(page, BUSY_INDICATOR);
       if (busy) sawBusy = true;
+
+      // A modal appearing after Run means the run was intercepted, not slow. Retry once
+      // behind a dismissal; if it comes back, Google is gating the run and no amount of
+      // waiting will help — fail immediately with what the dialog actually said.
+      if (captured.length === 0 && !busy) {
+        const dialog = await this.firstPresent(page, DIALOG_CONTAINER);
+        if (dialog) {
+          const dialogText = ((await dialog.textContent().catch(() => "")) ?? "")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (rerunsLeft > 0) {
+            rerunsLeft--;
+            await this.dismissDialogs(page);
+            await this.clickRun(page);
+            await sleep(2_000);
+            continue;
+          }
+          throw BananaError.dialogBlocked(dialogText, await this.dump(page, "dialog-blocked"));
+        }
+      }
 
       if (captured.length > 0) {
         // Give slower variations a moment to land before returning.
@@ -305,6 +389,15 @@ export class AiStudioProvider {
       }
       await sleep(400);
     } while (Date.now() < deadline);
+    return null;
+  }
+
+  /** Like findFirst but single-shot and visibility-checked, for transient overlays. */
+  private async firstPresent(page: Page, selectors: string[]) {
+    for (const selector of selectors) {
+      const locator = page.locator(selector).first();
+      if (await locator.isVisible({ timeout: 300 }).catch(() => false)) return locator;
+    }
     return null;
   }
 

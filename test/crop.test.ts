@@ -10,9 +10,28 @@ test("no-crop spellings all disable cropping", () => {
 
 test("auto trims the right edge, where Gemini stamps its mark", () => {
   assert.deepEqual(parseCropSpec("auto"), AUTO_SPEC);
-  assert.deepEqual(AUTO_SPEC.right, { value: 10, unit: "pct" });
+  assert.deepEqual(AUTO_SPEC.right, { value: 10, unit: "pct", minPx: 100 });
   assert.deepEqual(AUTO_SPEC.top, { value: 0, unit: "px" });
   assert.deepEqual(AUTO_SPEC.bottom, { value: 0, unit: "px" });
+});
+
+test("the auto pixel floor holds on narrow aspect ratios", () => {
+  // The stamp is a fixed-size overlay. On a 9:16 result a bare 10% would be ~58px and
+  // leave it in frame, so the floor must win.
+  const narrow = resolveCropRect(AUTO_SPEC, 576, 1024)!;
+  assert.equal(narrow.width, 476, "576 - max(58, 100)");
+
+  // On a wide result the percentage is already above the floor and is used as-is.
+  const wide = resolveCropRect(AUTO_SPEC, 1600, 900)!;
+  assert.equal(wide.width, 1440, "1600 - 160");
+});
+
+test("a pixel floor never applies to a zero inset", () => {
+  // minPx must not turn "no crop on this side" into a crop.
+  const spec = parseCropSpec("auto")!;
+  const rect = resolveCropRect(spec, 1024, 559)!;
+  assert.equal(rect.y, 0);
+  assert.equal(rect.height, 559);
 });
 
 test("named sides parse independently", () => {

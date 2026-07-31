@@ -15,6 +15,7 @@ import {
   firstPresent,
   harvestDom,
   harvestResponse,
+  domImageSrcs,
   makeCollector,
   settle,
   truncate,
@@ -195,12 +196,16 @@ export class GeminiAppProvider {
     };
     page.on("response", onResponse);
 
+    // Anything already rendered belongs to a previous turn or to the input we just
+    // attached, so the DOM fallback must not mistake it for this request's result.
+    const preexisting = await domImageSrcs(page);
+
     try {
       await this.submit(page, this.composePrompt(request));
       const text = await this.waitForResult(page, images, request.count);
 
       if (images.length === 0) {
-        for (const buf of await harvestDom(page)) collect(buf);
+        for (const buf of await harvestDom(page, 256, preexisting)) collect(buf);
       }
       if (images.length === 0) {
         const dumpPath = await dumpPage(page, "no-image");
@@ -234,9 +239,15 @@ export class GeminiAppProvider {
     const prompt = request.prompt.trim();
     const parts: string[] = [];
 
-    // Without an explicit instruction the app answers *about* the subject instead of
-    // drawing it. Only add one when the prompt does not already imply an image.
-    parts.push(IMAGE_INTENT.test(prompt) ? prompt : `Generate an image of ${prompt}`);
+    if (request.imagePaths?.length) {
+      // Editing: the attachment is the subject. Prefixing "Generate an image of" here
+      // would be ungrammatical and reads as a request to start from scratch.
+      parts.push(prompt);
+    } else {
+      // Without an explicit instruction the app answers *about* the subject instead of
+      // drawing it. Only add one when the prompt does not already imply an image.
+      parts.push(IMAGE_INTENT.test(prompt) ? prompt : `Generate an image of ${prompt}`);
+    }
     if (request.aspectRatio) parts.push(`Use a ${request.aspectRatio} aspect ratio.`);
     if (request.count > 1) parts.push(`Produce ${request.count} distinct variations.`);
     return parts.join(" ");
@@ -250,6 +261,13 @@ export class GeminiAppProvider {
     if (!input) throw BananaError.uiChanged("Gemini prompt box", await dumpPage(page, "submit"));
 
     await input.click();
+    // Gemini persists composer drafts, so a send that did not go through leaves text
+    // behind and the next prompt would be appended to it.
+    await input.fill("").catch(async () => {
+      await input.evaluate((el) => {
+        (el as HTMLElement).textContent = "";
+      });
+    });
     // The editor is a contenteditable that listens for real key events.
     await input.type(prompt, { delay: 4 });
     await sleep(400);
@@ -266,6 +284,8 @@ export class GeminiAppProvider {
     const deadline = Date.now() + config.timeoutMs;
     let sawBusy = false;
     let settleUntil: number | null = null;
+    let lastText = "";
+    let textStableSince = Date.now();
 
     while (Date.now() < deadline) {
       const busy = await anyVisible(page, BUSY_INDICATOR);
@@ -287,6 +307,17 @@ export class GeminiAppProvider {
         // Response finished with no image: a refusal or a text-only answer.
         await sleep(2_000);
         break;
+      } else {
+        // The busy indicator may never match (UI change, or a response that completes
+        // between two polls). Without this, such a run burns the whole deadline and
+        // throws `timeout`, discarding the refusal text that explains what happened.
+        const text = await this.readResponseText(page);
+        if (text && text === lastText) {
+          if (Date.now() - textStableSince > 8_000) break;
+        } else {
+          lastText = text;
+          textStableSince = Date.now();
+        }
       }
       await sleep(500);
     }
@@ -319,12 +350,18 @@ export class GeminiAppProvider {
    * paths and produces a TRUSTED drop indistinguishable from dragging off the desktop.
    */
   private async attachFiles(page: Page, paths: string[]): Promise<void> {
-    // Still prefer a real input if the page ever exposes one.
+    // Still prefer a real input if the page ever exposes one — but verify it the same
+    // way as the CDP path. A decoy or type-rejecting input would otherwise degrade the
+    // request into a plain text-to-image generation with no error.
     if ((await page.locator(FILE_INPUT).count()) > 0) {
       await page.locator(FILE_INPUT).first().setInputFiles(paths);
       await settle(page);
-      await sleep(3_000);
-      return;
+      const viaInput = await findFirst(page, ATTACHMENT_INDICATOR, 12_000);
+      if (viaInput) {
+        await sleep(3_000);
+        return;
+      }
+      // Fall through to the CDP drop rather than proceeding unattached.
     }
 
     // Validate and resolve every path before touching the browser: CDP takes paths,

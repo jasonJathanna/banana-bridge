@@ -14,9 +14,31 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/** True when a graphical session exists for a headed browser to attach to. */
+/**
+ * True when a headed browser has somewhere to draw.
+ *
+ * Only Linux/BSD advertise a display through DISPLAY/WAYLAND_DISPLAY. macOS and Windows
+ * never set them yet run headed Chrome perfectly well, so sniffing those variables there
+ * would silently force headless — the mode Google fingerprints — on every such user.
+ */
 function hasDisplay(): boolean {
+  if (process.platform === "darwin" || process.platform === "win32") return true;
   return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
+const PROVIDERS = ["gemini-app", "aistudio"] as const;
+export type ProviderName = (typeof PROVIDERS)[number];
+
+/**
+ * A typo like BANANA_PROVIDER=ai-studio must not silently run the other surface while
+ * diagnostics echo the bogus name back. Fall back, but record the bad value so
+ * session_status and doctor can say what happened.
+ */
+function providerFromEnv(): { provider: ProviderName; invalid?: string } {
+  const raw = (process.env.BANANA_PROVIDER || "").trim();
+  if (raw === "") return { provider: "gemini-app" };
+  if ((PROVIDERS as readonly string[]).includes(raw)) return { provider: raw as ProviderName };
+  return { provider: "gemini-app", invalid: raw };
 }
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -38,10 +60,10 @@ export const config = {
   debugDir: process.env.BANANA_DEBUG_DIR || path.join(root, "debug"),
 
   /**
-   * Headed by default — Google fingerprints headless Chrome — but only when there is
-   * actually a display to draw on. An MCP server is often spawned without one (no
-   * DISPLAY/WAYLAND_DISPLAY), where a headed launch cannot start at all, so fall back
-   * to headless rather than failing. BANANA_HEADLESS overrides either way.
+   * Headed by default — Google fingerprints headless Chrome — but only where a display
+   * exists. An MCP server is often spawned without one on Linux, where a headed launch
+   * cannot start at all, so fall back to headless rather than failing. BANANA_HEADLESS
+   * overrides either way. See hasDisplay() for the platform caveat.
    */
   headless: envBool("BANANA_HEADLESS", !hasDisplay()),
   /** Recorded so diagnostics can explain which way the fallback went. */
@@ -59,7 +81,9 @@ export const config = {
    * AI Studio gates Run behind a billing dialog on free accounts; "aistudio" is kept
    * for accounts that do have AI Studio access.
    */
-  provider: (process.env.BANANA_PROVIDER || "gemini-app") as "gemini-app" | "aistudio",
+  provider: providerFromEnv().provider,
+  /** Set when BANANA_PROVIDER held an unrecognized value that was ignored. */
+  providerInvalid: providerFromEnv().invalid,
   model: process.env.BANANA_MODEL || "gemini-2.5-flash-image",
   geminiAppUrl: process.env.BANANA_GEMINI_URL || "https://gemini.google.com/app",
   studioUrl: process.env.BANANA_STUDIO_URL || "https://aistudio.google.com/prompts/new_chat",

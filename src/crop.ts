@@ -10,6 +10,11 @@ export type Unit = "px" | "pct";
 export interface Inset {
   value: number;
   unit: Unit;
+  /**
+   * Floor in pixels for a percentage inset. Watermarks are fixed-size overlays, so a
+   * bare percentage that clears one aspect ratio is too small on a narrower one.
+   */
+  minPx?: number;
 }
 
 export interface CropSpec {
@@ -32,11 +37,15 @@ const ZERO: Inset = { value: 0, unit: "px" };
  * The Gemini app stamps its sparkle mark in the bottom-RIGHT corner, inset from both
  * edges. Measured on a real 1024x559 result: a 10% right inset clears it and keeps the
  * full subject, while clearing it from the bottom would cost ~19% of the height. Hence
- * a right inset rather than a bottom band. Calibrate with `banana-bridge probe-watermark`.
+ * a right inset rather than a bottom band.
+ *
+ * The 100px floor matters: the stamp is a fixed-size overlay, so on a tall aspect ratio
+ * (9:16 is ~576px wide) a bare 10% would be ~58px and leave the mark in frame while
+ * still reporting the image as cleaned. Calibrate with `banana-bridge probe-watermark`.
  */
 export const AUTO_SPEC: CropSpec = {
   top: ZERO,
-  right: { value: 10, unit: "pct" },
+  right: { value: 10, unit: "pct", minPx: 100 },
   bottom: ZERO,
   left: ZERO,
 };
@@ -104,7 +113,10 @@ export function parseCropSpec(input: string | undefined | null): CropSpec | null
 }
 
 function toPixels(inset: Inset, extent: number): number {
-  return Math.round(inset.unit === "pct" ? (extent * inset.value) / 100 : inset.value);
+  const px = Math.round(inset.unit === "pct" ? (extent * inset.value) / 100 : inset.value);
+  if (inset.value === 0) return 0;
+  // Never let a floor exceed the image itself; resolveCropRect reports that separately.
+  return inset.minPx ? Math.min(extent, Math.max(px, inset.minPx)) : px;
 }
 
 /**

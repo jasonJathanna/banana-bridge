@@ -54,6 +54,9 @@ if (genPath && fs.existsSync(genPath)) {
 // Same call again, this time taking the crop advice the previous result gave.
 await call("generate_image", { prompt: "a small potted cactus on a windowsill", crop: "auto" }, "generate_image (crop: auto)");
 
+// Narrow aspect ratio: the auto crop's pixel floor should still clear the mark.
+await call("generate_image", { prompt: "a lighthouse at dusk", aspect_ratio: "9:16", crop: "auto" }, "generate_image (9:16 + crop auto)");
+
 await client.close();
 console.log("\ndone");
 process.exit(0);

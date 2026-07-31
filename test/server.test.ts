@@ -315,7 +315,7 @@ test("invalid arguments are rejected before reaching the provider", async () => 
   assert.equal(calls.length, 0);
 });
 
-test("a crop that rounds to zero pixels is a silent no-op", async () => {
+test("a crop that rounds to zero pixels leaves the image alone AND still warns", async () => {
   await freshState();
   const { deps, crops } = stubDeps({ images: 1 });
   const client = await connect(deps);
@@ -329,8 +329,13 @@ test("a crop that rounds to zero pixels is a silent no-op", async () => {
   // 1x1 source: 25% of 1px rounds to 0, so the browser is never involved.
   assert.notEqual((result as { isError?: boolean }).isError, true);
   assert.deepEqual(crops, []);
-  assert.doesNotMatch(contentOf(result)[0]!.text!, /Crop/);
   assert.deepEqual(await fs.readFile(target), png());
+
+  // The crop did NOT happen, so the watermark is still there and must be reported.
+  // Gating the warning on the requested spec instead of the outcome hid exactly this.
+  const text = contentOf(result)[0]!.text!;
+  assert.match(text, /Crop resolved to zero pixels/);
+  assert.match(text, /Visible watermark/);
 });
 
 test("a crop larger than the image is an error, not a 0-pixel file", async () => {
@@ -426,7 +431,8 @@ test("edit_image accepts crop too", async () => {
     arguments: { prompt: "tweak", image_paths: [input], crop: "auto" },
   });
 
-  assert.deepEqual(crops, [{ x: 0, y: 0, width: 360, height: 200 }]);
+  // auto = max(10% of 400, 100px) = 100px off the right edge.
+  assert.deepEqual(crops, [{ x: 0, y: 0, width: 300, height: 200 }]);
 });
 
 test("provenance is disclosed in the server instructions and every tool description", async () => {
@@ -536,7 +542,7 @@ test("an uncropped result warns the agent that a visible watermark is present", 
   });
   const cropText = contentOf(cropped)[0]!.text!;
   assert.doesNotMatch(cropText, /Visible watermark/);
-  assert.match(cropText, /Crop: cropped 400x200 -> 360x200/);
+  assert.match(cropText, /Crop: cropped 400x200 -> 300x200/);
   // The invisible-watermark disclosure is unconditional and survives either path.
   assert.match(text, /invisible SynthID/);
   assert.match(cropText, /invisible SynthID/);

@@ -90,7 +90,9 @@ To remove it losslessly, re-run with crop:"auto" (trims 10% off the right edge),
 or crop the image yourself before using it.
 ```
 
-That line disappears once a crop has actually run. Set `BANANA_CROP=auto` (or add
+That line disappears once a crop has **actually** run — not merely when one was
+requested. A crop that bails out (unreadable dimensions, a browser failure, a spec that
+resolves to zero pixels) still warns, because the mark is still there. Set `BANANA_CROP=auto` (or add
 `"env": {"BANANA_CROP": "auto"}` to the server entry in `~/.claude.json`) if you would
 rather every image come out clean without the agent having to ask.
 
@@ -107,7 +109,7 @@ Accepted forms, for `BANANA_CROP` or the per-call `crop` argument:
 | Form | Meaning |
 |---|---|
 | `none` | No crop (default). |
-| `auto` | Trim 10% off the right edge — clears the sparkle with the least loss. |
+| `auto` | Trim the right edge by `max(10%, 100px)` — clears the sparkle with the least loss. The pixel floor matters on narrow aspect ratios, where a bare 10% is too small. |
 | `bottom:6%` | Named sides: `top`, `right`, `bottom`, `left`; comma-separate several. |
 | `48px` / `3%` | All four sides. |
 | `5%,10px` | Vertical, horizontal. |
@@ -200,8 +202,8 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 | `BANANA_OUTPUT_DIR` | `…/images` | Where images land without `output_path`. |
 | `BANANA_STATE_FILE` | `…/state.json` | Daily quota counter. |
 | `BANANA_DEBUG_DIR` | `…/debug` | Failure dumps and recon logs. |
-| `BANANA_HEADLESS` | auto | Headed when a display exists (`DISPLAY`/`WAYLAND_DISPLAY`), headless otherwise — an MCP server is often spawned without one. Set explicitly to override. |
-| `BANANA_PROVIDER` | `gemini-app` | `gemini-app` or `aistudio`. |
+| `BANANA_HEADLESS` | auto | Headed on macOS/Windows, and on Linux when `DISPLAY`/`WAYLAND_DISPLAY` is set; headless otherwise, since an MCP server is often spawned without a display. Set explicitly to override. |
+| `BANANA_PROVIDER` | `gemini-app` | `gemini-app` or `aistudio`. An unrecognized value is ignored with a note in `session_status`, not silently accepted. |
 | `BANANA_MODEL` | `gemini-2.5-flash-image` | AI Studio only — passed as the `model` URL parameter. |
 | `BANANA_DAILY_LIMIT` | `100` | Local estimate only — Google is the authority. |
 | `BANANA_TIMEOUT_MS` | `180000` | Per-generation deadline. |
@@ -211,7 +213,7 @@ All optional; defaults under `~/.local/share/banana-bridge/`.
 ## Tests
 
 ```bash
-npm test          # 55 tests, no browser needed
+npm test          # 57 tests, no browser needed
 ```
 
 Covers image sniffing/dimension parsing, schema-agnostic base64 extraction, crop-spec

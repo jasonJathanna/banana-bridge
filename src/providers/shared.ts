@@ -95,15 +95,35 @@ export async function harvestResponse(
   }
 }
 
+/**
+ * The srcs of large images already on the page. Snapshot this BEFORE submitting so the
+ * DOM fallback can ignore them: the page legitimately holds a previous turn's result and
+ * the preview of a just-uploaded input, either of which would otherwise be returned as
+ * this request's output.
+ */
+export async function domImageSrcs(page: Page, minDim = 256): Promise<string[]> {
+  return await page
+    .evaluate(
+      (minDim) =>
+        Array.from(document.querySelectorAll("img"))
+          .filter((img) => img.naturalWidth >= minDim && img.naturalHeight >= minDim)
+          .map((img) => img.currentSrc || img.src)
+          .filter(Boolean),
+      minDim,
+    )
+    .catch(() => [] as string[]);
+}
+
 /** Fallback: pull images off the rendered page, resolving blob: URLs in page context. */
-export async function harvestDom(page: Page, minDim = 256): Promise<Buffer[]> {
+export async function harvestDom(page: Page, minDim = 256, exclude: string[] = []): Promise<Buffer[]> {
   const encoded = await page
-    .evaluate(async (minDim) => {
+    .evaluate(async ({ minDim, exclude }) => {
+      const skip = new Set(exclude);
       const out: string[] = [];
       for (const img of Array.from(document.querySelectorAll("img"))) {
         if (img.naturalWidth < minDim || img.naturalHeight < minDim) continue;
         const src = img.currentSrc || img.src;
-        if (!src) continue;
+        if (!src || skip.has(src)) continue;
         if (src.startsWith("data:")) {
           out.push(src);
           continue;
@@ -120,7 +140,7 @@ export async function harvestDom(page: Page, minDim = 256): Promise<Buffer[]> {
         }
       }
       return out;
-    }, minDim)
+    }, { minDim, exclude })
     .catch(() => [] as string[]);
 
   const buffers: Buffer[] = [];

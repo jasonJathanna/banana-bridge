@@ -12,6 +12,7 @@ import {
   firstPresent,
   harvestDom,
   harvestResponse,
+  domImageSrcs,
   makeCollector,
   settle,
   truncate,
@@ -144,12 +145,16 @@ export class AiStudioProvider {
     };
     page.on("response", onResponse);
 
+    // Anything already rendered predates this request; the DOM fallback must not return
+    // a previous turn's image as this one's result.
+    const preexisting = await domImageSrcs(page);
+
     try {
       await this.submitPrompt(page, this.composePrompt(request));
       const text = await this.waitForResult(page, images, request.count);
 
       if (images.length === 0) {
-        for (const buf of await harvestDom(page)) collect(buf);
+        for (const buf of await harvestDom(page, 256, preexisting)) collect(buf);
       }
       if (images.length === 0) {
         const dumpPath = await dumpPage(page, "no-image");

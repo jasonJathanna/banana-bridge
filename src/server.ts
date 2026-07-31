@@ -103,14 +103,14 @@ async function applyCrop(
   buf: Buffer,
   spec: CropSpec | null,
   notes: string[],
-): Promise<Buffer> {
-  if (!spec) return buf;
+): Promise<{ image: Buffer; cropped: boolean }> {
+  if (!spec) return { image: buf, cropped: false };
 
   const format = sniffFormat(buf);
   const dims = readDimensions(buf);
   if (!format || !dims) {
     notes.push("Crop skipped: could not read image dimensions.");
-    return buf;
+    return { image: buf, cropped: false };
   }
 
   let rect: CropRect | null;
@@ -119,15 +119,18 @@ async function applyCrop(
   } catch (err) {
     throw BananaError.invalidInput(err instanceof Error ? err.message : String(err));
   }
-  if (!rect) return buf;
+  if (!rect) {
+    notes.push("Crop resolved to zero pixels; image left unchanged.");
+    return { image: buf, cropped: false };
+  }
 
   const cropped = await deps.session.cropImage(buf, mimeFor(format), rect);
   if (!cropped) {
     notes.push("Crop failed in the browser; saved the uncropped image instead.");
-    return buf;
+    return { image: buf, cropped: false };
   }
   notes.push(`Crop: ${describeCrop(rect, dims)}.`);
-  return cropped;
+  return { image: cropped, cropped: true };
 }
 
 async function runGeneration(
@@ -166,8 +169,14 @@ async function runGeneration(
 
   const notes: string[] = [];
   const finalImages: Buffer[] = [];
+  // Warn unless EVERY image actually got cropped. A requested crop that silently bailed
+  // out — unreadable dimensions, a browser failure, a spec resolving to zero pixels —
+  // leaves the mark in place, and gating on the parsed spec would hide exactly that.
+  let allCropped = images.length > 0;
   for (const buf of images) {
-    finalImages.push(await applyCrop(deps, buf, cropSpec, notes));
+    const result = await applyCrop(deps, buf, cropSpec, notes);
+    finalImages.push(result.image);
+    if (!result.cropped) allCropped = false;
   }
 
   const saved: SavedImage[] = [];
@@ -190,7 +199,7 @@ async function runGeneration(
         `Generated ${saved.length} image${saved.length === 1 ? "" : "s"}:`,
         describeSaved(saved),
         notes.length > 0 ? notes.join("\n") : null,
-        cropSpec === null && stampsVisibleMark() ? WATERMARK_WARNING : null,
+        !allCropped && stampsVisibleMark() ? WATERMARK_WARNING : null,
         PROVENANCE_NOTE,
         `Quota (local estimate): ${quota.used}/${quota.limit} used today, ${quota.remaining} left.`,
         text ? `Model said: ${text.slice(0, 300)}` : null,
@@ -352,7 +361,8 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
       lines.push(
         `Browser: ${deps.session.isOpen ? "running" : "not started"} ` +
           `(headless=${config.headless}${config.hasDisplay ? "" : ", no display detected"})`,
-        `Provider: ${config.provider}`,
+        `Provider: ${config.provider}` +
+          (config.providerInvalid ? ` (ignored invalid BANANA_PROVIDER="${config.providerInvalid}")` : ""),
         `Model: ${config.model}`,
         `Profile: ${config.profileDir}`,
         `Output dir: ${config.outputDir}`,

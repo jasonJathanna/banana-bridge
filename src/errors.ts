@@ -10,6 +10,7 @@ export type FailureKind =
   | "ui_changed"
   | "invalid_input"
   | "dialog_blocked"
+  | "upload_unsupported"
   | "timeout"
   | "browser_unavailable";
 
@@ -19,7 +20,8 @@ export class BananaError extends Error {
   readonly debugPath?: string;
 
   constructor(kind: FailureKind, message: string, hint: string, debugPath?: string) {
-    super(message);
+    // Provider errors can carry huge browser logs; a tool result is not the place.
+    super(message.length > 600 ? `${message.slice(0, 600)}…` : message);
     this.name = "BananaError";
     this.kind = kind;
     this.hint = hint;
@@ -75,6 +77,19 @@ export class BananaError extends Error {
       "Open AI Studio in a normal browser, clear the dialog by hand, then retry. If it is an " +
         "upgrade/billing prompt, this account may not have free image generation on this surface. " +
         "The bridge never clicks anything that could enable billing.",
+      debugPath,
+    );
+  }
+
+  static uploadUnsupported(debugPath?: string): BananaError {
+    return new BananaError(
+      "upload_unsupported",
+      "Could not attach the input image: gemini.google.com accepts files only through a " +
+        "native OS file picker (File System Access API), which cannot be automated, and it " +
+        "ignores synthetic drop and paste events.",
+      "Use BANANA_PROVIDER=aistudio for image editing if that account has AI Studio access " +
+        "(it exposes a real file input), or edit the image with a local tool. generate_image " +
+        "is unaffected.",
       debugPath,
     );
   }

@@ -324,12 +324,14 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
         lines.push("Signed in: yes");
       } catch (err) {
         const info = describeError(err);
-        lines.push(`Signed in: no (${info.kind}: ${info.message})`);
+        const brief = info.message.split("\n")[0]!.slice(0, 200);
+        lines.push(`Signed in: no (${info.kind}: ${brief})`);
         if (info.hint) trailing.push(`Hint: ${info.hint}`);
       }
 
       lines.push(
-        `Browser: ${deps.session.isOpen ? "running" : "not started"} (headless=${config.headless})`,
+        `Browser: ${deps.session.isOpen ? "running" : "not started"} ` +
+          `(headless=${config.headless}${config.hasDisplay ? "" : ", no display detected"})`,
         `Provider: ${config.provider}`,
         `Model: ${config.model}`,
         `Profile: ${config.profileDir}`,

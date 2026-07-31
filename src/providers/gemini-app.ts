@@ -2,7 +2,10 @@ import type { Page } from "playwright-core";
 import { config } from "../config.js";
 import { BananaError } from "../errors.js";
 import { BrowserSession, looksLikeSignIn } from "../browser.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { sleep } from "../queue.js";
+import { mimeFor, sniffFormat } from "../imagebytes.js";
 import {
   anyVisible,
   bySizeDescending,
@@ -81,14 +84,37 @@ const NOTICE_DISMISS = [
 const NEW_CHAT = ['button[aria-label*="New chat" i]', 'a[aria-label*="New chat" i]', 'button:has-text("New chat")'];
 
 const FILE_INPUT = 'input[type="file"]';
+
+/**
+ * Uploading is two steps here, not one: this button opens a MENU (observed items:
+ * "Upload files", "Add from Drive", "Create image", …) and only the menu item raises
+ * the file chooser. Waiting for a chooser on this click hangs until the timeout.
+ */
 const ADD_FILE_BUTTON = [
+  'button[aria-label*="Upload & tools" i]',
   'button[aria-label*="Open upload file menu" i]',
   'button[aria-label*="add files" i]',
   'button[aria-label*="Upload" i]',
   'button[aria-label*="attach" i]',
 ];
 
+const UPLOAD_MENU_ITEM = [
+  '[role="menuitem"]:has-text("Upload files")',
+  'button:has-text("Upload files")',
+  '.mat-mdc-menu-item:has-text("Upload files")',
+  '[role="menuitem"]:has-text("Upload")',
+];
+
 const RESPONSE_TEXT = ["model-response message-content", "model-response", "message-content"];
+
+/** Evidence that the composer really holds an attachment, not just that we tried. */
+const ATTACHMENT_INDICATOR = [
+  'button[aria-label*="Remove" i]',
+  'button[aria-label*="Delete file" i]',
+  "uploader-file-preview",
+  '[data-test-id*="file"]',
+  ".file-preview",
+];
 
 /** Gemini's streaming RPC. Matching is a hint only; capture is content-sniffed. */
 const GENERATE_RPC = /StreamGenerate|BardFrontendService|batchexecute|assistant\.lamda/i;
@@ -269,18 +295,61 @@ export class GeminiAppProvider {
     return "";
   }
 
+  /**
+   * Attaches local images to the composer.
+   *
+   * The obvious route — click "Upload & tools" then "Upload files" — is NOT automatable:
+   * that menu item opens a native OS picker through the File System Access API, which
+   * injects no <input type=file> and raises no Playwright "filechooser" event, so any
+   * wait on one hangs until it times out. Synthesising a drop carries the bytes in
+   * without involving a native dialog at all.
+   */
   private async attachFiles(page: Page, paths: string[]): Promise<void> {
-    const direct = page.locator(FILE_INPUT).first();
-    if ((await direct.count()) > 0) {
-      await direct.setInputFiles(paths);
-    } else {
-      const button = await findFirst(page, ADD_FILE_BUTTON, 5_000);
-      if (!button) throw BananaError.uiChanged("file upload control", await dumpPage(page, "upload"));
-      const [chooser] = await Promise.all([page.waitForEvent("filechooser"), button.click()]);
-      await chooser.setFiles(paths);
+    // Still prefer a real input if the page ever exposes one.
+    if ((await page.locator(FILE_INPUT).count()) > 0) {
+      await page.locator(FILE_INPUT).first().setInputFiles(paths);
+      await settle(page);
+      await sleep(3_000);
+      return;
     }
-    // Uploads must complete before submitting or they are dropped.
+
+    const files: { name: string; mime: string; base64: string }[] = [];
+    for (const p of paths) {
+      const bytes = await fs.readFile(p);
+      const format = sniffFormat(bytes);
+      if (!format) throw BananaError.invalidInput(`Not a readable image: ${p}`);
+      files.push({ name: path.basename(p), mime: mimeFor(format), base64: bytes.toString("base64") });
+    }
+
+    const target = await findFirst(page, PROMPT_INPUT, 15_000);
+    if (!target) throw BananaError.uiChanged("composer for file drop", await dumpPage(page, "upload"));
+
+    const built = await target.evaluate((el, files) => {
+      const dt = new DataTransfer();
+      for (const f of files) {
+        const bin = atob(f.base64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        dt.items.add(new File([arr], f.name, { type: f.mime }));
+      }
+      const opts = { bubbles: true, cancelable: true, composed: true, dataTransfer: dt };
+      const node = (el as HTMLElement).closest("rich-textarea") ?? (el as HTMLElement);
+      node.dispatchEvent(new DragEvent("dragenter", opts));
+      node.dispatchEvent(new DragEvent("dragover", opts));
+      node.dispatchEvent(new DragEvent("drop", opts));
+      return dt.files.length;
+    }, files);
+
+    void built; // Building a DataTransfer proves nothing; only the UI can confirm.
+
+    // Verify the app actually ingested the file. Without this check a failed attach
+    // silently degrades into a plain text-to-image generation, which returns a
+    // confident-looking result that has nothing to do with the input image.
     await settle(page);
-    await sleep(2_000);
+    const attached = await findFirst(page, ATTACHMENT_INDICATOR, 8_000);
+    if (!attached) {
+      throw BananaError.uploadUnsupported(await dumpPage(page, "upload-unsupported"));
+    }
+    await sleep(3_000);
   }
 }

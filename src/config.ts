@@ -14,6 +14,11 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** True when a graphical session exists for a headed browser to attach to. */
+function hasDisplay(): boolean {
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
 function envBool(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
@@ -32,8 +37,15 @@ export const config = {
   /** Screenshots + HTML dumps written when a generation fails. */
   debugDir: process.env.BANANA_DEBUG_DIR || path.join(root, "debug"),
 
-  /** Headless is opt-in: Google fingerprints headless Chrome. Prefer xvfb-run. */
-  headless: envBool("BANANA_HEADLESS", false),
+  /**
+   * Headed by default — Google fingerprints headless Chrome — but only when there is
+   * actually a display to draw on. An MCP server is often spawned without one (no
+   * DISPLAY/WAYLAND_DISPLAY), where a headed launch cannot start at all, so fall back
+   * to headless rather than failing. BANANA_HEADLESS overrides either way.
+   */
+  headless: envBool("BANANA_HEADLESS", !hasDisplay()),
+  /** Recorded so diagnostics can explain which way the fallback went. */
+  hasDisplay: hasDisplay(),
   /** Uses installed Chrome by default; set to "chromium" for a Playwright build. */
   browserChannel: process.env.BANANA_BROWSER_CHANNEL || "chrome",
   executablePath: process.env.BANANA_CHROME_PATH || undefined,

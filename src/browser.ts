@@ -46,7 +46,22 @@ export class BrowserSession {
         acceptDownloads: true,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      // Playwright appends the full Chrome command line and browser log. Useful in a
+      // terminal, but thousands of tokens of --disable-* flags in an MCP tool result
+      // is pure context bloat, so keep only the first meaningful lines.
+      const message = raw.split("\n").slice(0, 2).join(" ").slice(0, 300);
+
+      // Distinguish "no display" from "no browser" — they need opposite fixes, and the
+      // generic install-Chrome hint sends people the wrong way entirely.
+      const noDisplay = /XServer|X server|\$DISPLAY|platform failed to initialize/i.test(raw);
+      if (noDisplay && !headless) {
+        throw new BananaError(
+          "browser_unavailable",
+          `Chrome could not open a window: no display available. ${message}`,
+          "Set BANANA_HEADLESS=1, or run under `xvfb-run`. Chrome itself is installed and fine.",
+        );
+      }
       throw new BananaError(
         "browser_unavailable",
         `Could not launch Chrome: ${message}`,
